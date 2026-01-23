@@ -10,14 +10,24 @@ function UserPanel() {
   const [transactions, setTransactions] = useState([]);
   const [shareTransfers, setShareTransfers] = useState([]);
   const [shareRequests, setShareRequests] = useState([]);
+  const [deposits, setDeposits] = useState([]);
   const [selectedMember, setSelectedMember] = useState(null);
   const [showTransactionModal, setShowTransactionModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showRequestModal, setShowRequestModal] = useState(false);
+  const [showDepositModal, setShowDepositModal] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [transactionForm, setTransactionForm] = useState({ quantity: '', notes: '' });
   const [transferForm, setTransferForm] = useState({ quantity: '', toMemberId: '' });
   const [requestForm, setRequestForm] = useState({ quantity: '', toMemberId: '' });
+  const [depositForm, setDepositForm] = useState({ 
+    amount: '', 
+    cardNumber: '', 
+    cvv: '', 
+    expiryDate: '', 
+    idNumber: '',
+    paymentMethod: 'card' // 'card' or 'cash'
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -44,21 +54,24 @@ function UserPanel() {
         axios.get(`${API_URL}/share-transfers`)
       ];
       
-      // Always fetch requests if selectedMember exists
+      // Always fetch requests and deposits if selectedMember exists
       if (selectedMember) {
         promises.push(axios.get(`${API_URL}/share-requests?memberId=${selectedMember.id}`));
+        promises.push(axios.get(`${API_URL}/deposits?memberId=${selectedMember.id}`));
       } else {
+        promises.push(Promise.resolve({ data: [] }));
         promises.push(Promise.resolve({ data: [] }));
       }
       
-      const [membersRes, productsRes, transactionsRes, transfersRes, requestsRes] = await Promise.all(promises);
+      const [membersRes, productsRes, transactionsRes, transfersRes, requestsRes, depositsRes] = await Promise.all(promises);
       setMembers(membersRes.data);
       setProducts(productsRes.data);
       setTransactions(transactionsRes.data);
       setShareTransfers(transfersRes.data);
-      // Only update requests if we have selectedMember, otherwise keep existing requests
+      // Only update requests and deposits if we have selectedMember, otherwise keep existing
       if (selectedMember) {
         setShareRequests(requestsRes.data || []);
+        setDeposits(depositsRes.data || []);
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -201,11 +214,12 @@ function UserPanel() {
 
   // Calculate remaining fair share (fair share - already taken - already transferred)
   // This is what's left from YOUR original allocation (not including what you received)
+  // Note: Deposits don't affect allocation - they're just prepayments
   const getRemainingFairShare = (product) => {
     const fairShare = calculateFairShare(product);
     const taken = getTakenAmount(product.id);
     const transferred = getTransferredAmount(product.id);
-    // Remaining = fair share - taken - transferred (NOT including received)
+    // Remaining = fair share - taken - transferred (NOT including deposits or received)
     const remaining = fairShare - taken - transferred;
     return Math.max(0, Math.floor(remaining)); // Don't allow negative, return integer only
   };
@@ -216,6 +230,84 @@ function UserPanel() {
     const received = getReceivedAmount(product.id);
     // Total = what's left from your allocation + what you received from others
     return remainingFromAllocation + received;
+  };
+
+  // Calculate total deposits for a product (for display only, not for allocation calculation)
+  // Deposits are prepayments and don't affect the allocation
+  const getTotalDeposits = (productId) => {
+    if (!selectedMember) return 0;
+    const memberDeposits = deposits.filter(
+      d => d.memberId === selectedMember.id && d.productId === productId
+    );
+    return memberDeposits.reduce((sum, d) => sum + d.amount, 0);
+  };
+
+  const handleDepositClick = (product) => {
+    if (!selectedMember) {
+      alert('אנא בחרו קודם את שמכם');
+      return;
+    }
+    
+    setSelectedProduct(product);
+    setDepositForm({ 
+      amount: '50', 
+      cardNumber: '', 
+      cvv: '', 
+      expiryDate: '', 
+      idNumber: '',
+      paymentMethod: 'card'
+    });
+    setShowDepositModal(true);
+  };
+
+  const handleDepositSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      // Validate amount
+      const amount = parseFloat(depositForm.amount);
+      if (amount < 50 || amount > 1000) {
+        alert('הסכום חייב להיות בין 50 ₪ ל-1000 ₪');
+        return;
+      }
+
+      // If cash payment, don't require card details
+      const depositData = {
+        productId: selectedProduct.id,
+        memberId: selectedMember.id,
+        amount: amount,
+        paymentMethod: depositForm.paymentMethod
+      };
+
+      // Only include card details if payment method is card
+      if (depositForm.paymentMethod === 'card') {
+        depositData.cardNumber = depositForm.cardNumber;
+        depositData.cvv = depositForm.cvv;
+        depositData.expiryDate = depositForm.expiryDate;
+        depositData.idNumber = depositForm.idNumber;
+      }
+
+      await axios.post(`${API_URL}/deposits`, depositData);
+      setShowDepositModal(false);
+      setSelectedProduct(null);
+      setDepositForm({ amount: '', cardNumber: '', cvv: '', expiryDate: '', idNumber: '', paymentMethod: 'card' });
+      fetchData();
+    } catch (error) {
+      console.error('Error creating deposit:', error);
+      alert(error.response?.data?.error || 'שגיאה ביצירת הפיקדון');
+    }
+  };
+
+  const handleCancelDeposit = async (depositId) => {
+    if (!window.confirm('האם אתה בטוח שברצונך לבטל את הפיקדון?')) {
+      return;
+    }
+    try {
+      await axios.delete(`${API_URL}/deposits/${depositId}`);
+      fetchData();
+    } catch (error) {
+      console.error('Error cancelling deposit:', error);
+      alert(error.response?.data?.error || 'שגיאה בביטול הפיקדון');
+    }
   };
 
   const handleTransferClick = (product) => {
@@ -496,6 +588,16 @@ function UserPanel() {
                                   קיבלת: {getReceivedAmount(product.id)}{product.unit ? ` ${product.unit}` : ''}
                                 </p>
                               )}
+                              {getTotalDeposits(product.id) > 0 && (
+                                <p style={{ 
+                                  color: '#9C27B0', 
+                                  fontSize: '0.85rem',
+                                  marginTop: '0.25rem',
+                                  fontWeight: 'bold'
+                                }}>
+                                  💰 הפקדת: {getTotalDeposits(product.id).toFixed(2)} ₪
+                                </p>
+                              )}
                             </>
                           )}
                           {rule && canTake && (
@@ -549,6 +651,21 @@ function UserPanel() {
                               }}
                             >
                               בקש הקצבה
+                            </button>
+                            <button 
+                              className="btn-take"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDepositClick(product);
+                              }}
+                              style={{ 
+                                flex: 1,
+                                minWidth: '100px',
+                                background: 'linear-gradient(135deg, #9C27B0 0%, #7B1FA2 100%)',
+                                border: 'none'
+                              }}
+                            >
+                              💰 הפקד פיקדון
                             </button>
                           </div>
                         )}
@@ -657,16 +774,59 @@ function UserPanel() {
               </div>
             )}
 
+            {deposits.filter(d => d.memberId === selectedMember?.id).length > 0 && (
+              <div className="card" style={{ background: 'linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%)', border: '2px solid #9C27B0' }}>
+                <h2 className="card-title">💰 הפיקדונות שלי</h2>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
+                  {deposits
+                    .filter(d => d.memberId === selectedMember.id)
+                    .map(deposit => (
+                      <div key={deposit.id} style={{
+                        background: 'white',
+                        padding: '1rem',
+                        borderRadius: '10px',
+                        border: '1px solid #9C27B0',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                      }}>
+                        <div>
+                          <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
+                            פיקדון: {deposit.amount} ₪ עבור {deposit.product.name}
+                          </div>
+                          <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                            {formatDate(deposit.createdAt)} • {deposit.paymentMethod === 'cash' ? '💵 מזומן' : '💳 כרטיס אשראי'}
+                          </div>
+                        </div>
+                        <button
+                          className="btn-take"
+                          onClick={() => handleCancelDeposit(deposit.id)}
+                          style={{
+                            background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
+                            border: 'none',
+                            padding: '0.5rem 1rem',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          בטל פיקדון
+                        </button>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+
             <div className="card">
               <h2 className="card-title">📝 לוג פעילות</h2>
-              {transactions.length === 0 && shareTransfers.length === 0 ? (
+              {transactions.length === 0 && shareTransfers.length === 0 && deposits.length === 0 ? (
                 <p style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
                   אין פעילות עדיין
                 </p>
               ) : (
                 <div className="transactions-list">
                   {[...transactions.map(t => ({ ...t, type: 'transaction', sortDate: new Date(t.createdAt) })), 
-                     ...shareTransfers.map(t => ({ ...t, type: 'transfer', sortDate: new Date(t.createdAt) }))]
+                     ...shareTransfers.map(t => ({ ...t, type: 'transfer', sortDate: new Date(t.createdAt) })),
+                     ...deposits.map(d => ({ ...d, type: 'deposit', sortDate: new Date(d.createdAt) }))]
                     .sort((a, b) => b.sortDate - a.sortDate)
                     .map(item => {
                       if (item.type === 'transaction') {
@@ -695,6 +855,46 @@ function UserPanel() {
                               <button
                                 className="btn-take"
                                 onClick={() => handleCancelTransaction(item.id)}
+                                style={{
+                                  background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
+                                  border: 'none',
+                                  padding: '0.5rem 1rem',
+                                  whiteSpace: 'nowrap',
+                                  marginLeft: '1rem'
+                                }}
+                              >
+                                בטל
+                              </button>
+                            )}
+                          </div>
+                        );
+                      } else if (item.type === 'deposit') {
+                        const isMyDeposit = selectedMember && item.memberId === selectedMember.id;
+                        return (
+                          <div key={`d-${item.id}`} className="log-item" style={{
+                            borderRight: '4px solid #9C27B0',
+                            background: 'linear-gradient(90deg, rgba(156, 39, 176, 0.1) 0%, transparent 100%)',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                          }}>
+                            <div style={{ flex: 1 }}>
+                              <div className="log-item-header">
+                                <span className="log-item-name">
+                                  💰 {item.member.name} הפקיד פיקדון עבור {item.product.name}
+                                </span>
+                                <span className="log-item-time">
+                                  {formatDate(item.createdAt)}
+                                </span>
+                              </div>
+                              <div className="log-item-details">
+                                סכום: {item.amount} ₪ • {item.paymentMethod === 'cash' ? '💵 מזומן' : '💳 כרטיס אשראי'}
+                              </div>
+                            </div>
+                            {isMyDeposit && (
+                              <button
+                                className="btn-take"
+                                onClick={() => handleCancelDeposit(item.id)}
                                 style={{
                                   background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
                                   border: 'none',
@@ -1049,6 +1249,229 @@ function UserPanel() {
                     })()}
                   >
                     שלח בקשה
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showDepositModal && selectedProduct && (
+          <div className="modal" onClick={() => setShowDepositModal(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{
+              background: 'linear-gradient(135deg, #9C27B0 0%, #7B1FA2 100%)',
+              borderRadius: '20px',
+              boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
+              maxWidth: '500px',
+              width: '90%'
+            }}>
+              <div className="modal-header" style={{ 
+                background: 'rgba(255, 255, 255, 0.1)',
+                padding: '1.5rem',
+                borderRadius: '20px 20px 0 0',
+                borderBottom: '2px solid rgba(255, 255, 255, 0.2)'
+              }}>
+                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold' }}>
+                  💳 הפקדת פיקדון - {selectedProduct.name}
+                </h2>
+                <button className="close-btn" onClick={() => setShowDepositModal(false)} style={{
+                  color: 'white',
+                  fontSize: '1.5rem',
+                  background: 'rgba(255, 255, 255, 0.2)',
+                  borderRadius: '50%',
+                  width: '35px',
+                  height: '35px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: 'none',
+                  cursor: 'pointer',
+                  transition: 'all 0.3s ease'
+                }}>×</button>
+              </div>
+              <form onSubmit={handleDepositSubmit} style={{ padding: '1.5rem', background: 'white' }}>
+                <div className="form-group">
+                  <label>סכום הפיקדון (₪):</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="50"
+                    max="1000"
+                    value={depositForm.amount}
+                    onChange={(e) => {
+                      const value = parseFloat(e.target.value) || 0;
+                      if (value > 1000) {
+                        setDepositForm({ ...depositForm, amount: '1000' });
+                      } else if (value < 50 && value > 0) {
+                        setDepositForm({ ...depositForm, amount: '50' });
+                      } else {
+                        setDepositForm({ ...depositForm, amount: e.target.value });
+                      }
+                    }}
+                    required
+                    style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ddd' }}
+                  />
+                  <small style={{ color: '#666', marginTop: '0.25rem', display: 'block' }}>
+                    סכום מינימלי: 50 ₪ | סכום מקסימלי: 1000 ₪
+                  </small>
+                </div>
+
+                <div className="form-group" style={{ marginTop: '1.5rem' }}>
+                  <label>אמצעי תשלום:</label>
+                  <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
+                    <label style={{ 
+                      flex: 1, 
+                      padding: '1rem', 
+                      border: depositForm.paymentMethod === 'card' ? '2px solid #9C27B0' : '2px solid #ddd',
+                      borderRadius: '10px',
+                      cursor: 'pointer',
+                      background: depositForm.paymentMethod === 'card' ? 'rgba(156, 39, 176, 0.1)' : 'white',
+                      transition: 'all 0.3s ease'
+                    }}>
+                      <input
+                        type="radio"
+                        name="paymentMethod"
+                        value="card"
+                        checked={depositForm.paymentMethod === 'card'}
+                        onChange={(e) => setDepositForm({ ...depositForm, paymentMethod: e.target.value })}
+                        style={{ marginLeft: '0.5rem' }}
+                      />
+                      💳 כרטיס אשראי
+                    </label>
+                    <label style={{ 
+                      flex: 1, 
+                      padding: '1rem', 
+                      border: depositForm.paymentMethod === 'cash' ? '2px solid #4CAF50' : '2px solid #ddd',
+                      borderRadius: '10px',
+                      cursor: 'pointer',
+                      background: depositForm.paymentMethod === 'cash' ? 'rgba(76, 175, 80, 0.1)' : 'white',
+                      transition: 'all 0.3s ease'
+                    }}>
+                      <input
+                        type="radio"
+                        name="paymentMethod"
+                        value="cash"
+                        checked={depositForm.paymentMethod === 'cash'}
+                        onChange={(e) => setDepositForm({ ...depositForm, paymentMethod: e.target.value })}
+                        style={{ marginLeft: '0.5rem' }}
+                      />
+                      💵 מזומן
+                    </label>
+                  </div>
+                </div>
+                
+                {depositForm.paymentMethod === 'card' && (
+                <div style={{ 
+                  background: 'linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%)',
+                  padding: '1.5rem',
+                  borderRadius: '15px',
+                  marginTop: '1.5rem',
+                  border: '2px solid #9C27B0'
+                }}>
+                  <h3 style={{ margin: '0 0 1rem 0', color: '#333', fontSize: '1.2rem' }}>💳 פרטי כרטיס אשראי</h3>
+                  
+                  <div className="form-group">
+                    <label>מספר כרטיס אשראי:</label>
+                    <input
+                      type="text"
+                      maxLength="19"
+                      placeholder="1234 5678 9012 3456"
+                      value={depositForm.cardNumber}
+                      onChange={(e) => {
+                        let value = e.target.value.replace(/\s/g, '').replace(/\D/g, '');
+                        if (value.length > 16) value = value.slice(0, 16);
+                        // Add spaces every 4 digits
+                        value = value.match(/.{1,4}/g)?.join(' ') || value;
+                        setDepositForm({ ...depositForm, cardNumber: value });
+                      }}
+                      required={depositForm.paymentMethod === 'card'}
+                      style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ddd', fontFamily: 'monospace' }}
+                    />
+                  </div>
+                  
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem' }}>
+                    <div className="form-group">
+                      <label>תוקף (MM/YY):</label>
+                      <input
+                        type="text"
+                        maxLength="5"
+                        placeholder="12/25"
+                        value={depositForm.expiryDate}
+                        onChange={(e) => {
+                          let value = e.target.value.replace(/\D/g, '');
+                          if (value.length >= 2) {
+                            value = value.slice(0, 2) + '/' + value.slice(2, 4);
+                          }
+                          setDepositForm({ ...depositForm, expiryDate: value });
+                        }}
+                        required={depositForm.paymentMethod === 'card'}
+                        style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ddd' }}
+                      />
+                    </div>
+                    
+                    <div className="form-group">
+                      <label>CVV:</label>
+                      <input
+                        type="text"
+                        maxLength="4"
+                        placeholder="123"
+                        value={depositForm.cvv}
+                        onChange={(e) => {
+                          let value = e.target.value.replace(/\D/g, '').slice(0, 4);
+                          setDepositForm({ ...depositForm, cvv: value });
+                        }}
+                        required={depositForm.paymentMethod === 'card'}
+                        style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ddd' }}
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="form-group">
+                    <label>תעודת זהות:</label>
+                    <input
+                      type="text"
+                      maxLength="9"
+                      placeholder="123456789"
+                      value={depositForm.idNumber}
+                      onChange={(e) => {
+                        let value = e.target.value.replace(/\D/g, '').slice(0, 9);
+                        setDepositForm({ ...depositForm, idNumber: value });
+                      }}
+                      required={depositForm.paymentMethod === 'card'}
+                      style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ddd' }}
+                    />
+                  </div>
+                </div>
+                )}
+                
+                {depositForm.paymentMethod === 'cash' && (
+                  <div style={{ 
+                    background: 'linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%)',
+                    padding: '1.5rem',
+                    borderRadius: '15px',
+                    marginTop: '1.5rem',
+                    border: '2px solid #4CAF50',
+                    textAlign: 'center'
+                  }}>
+                    <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>💵</div>
+                    <h3 style={{ margin: '0 0 0.5rem 0', color: '#333', fontSize: '1.2rem' }}>תשלום במזומן</h3>
+                    <p style={{ margin: 0, color: '#666', fontSize: '0.9rem' }}>
+                      הסכום יגבה ממך במזומן בעת איסוף המוצר
+                    </p>
+                  </div>
+                )}
+                
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setShowDepositModal(false)}>
+                    ביטול
+                  </button>
+                  <button type="submit" className="btn btn-primary" style={{
+                    background: depositForm.paymentMethod === 'cash' 
+                      ? 'linear-gradient(135deg, #4CAF50 0%, #45a049 100%)'
+                      : 'linear-gradient(135deg, #9C27B0 0%, #7B1FA2 100%)',
+                    border: 'none'
+                  }}>
+                    {depositForm.paymentMethod === 'cash' ? '💵 שלח פיקדון במזומן' : '💳 שלח תשלום'}
                   </button>
                 </div>
               </form>

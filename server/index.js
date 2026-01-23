@@ -917,6 +917,194 @@ app.delete('/api/transactions/:id', async (req, res) => {
   }
 });
 
+// Deposit Routes
+app.post('/api/deposits', async (req, res) => {
+  try {
+    // Check if deposit model exists
+    if (!prisma.deposit) {
+      return res.status(500).json({ 
+        error: 'Deposit model not found. Please run: npx prisma generate and restart the server' 
+      });
+    }
+    
+    const { productId, memberId, amount, paymentMethod, cardNumber, cvv, expiryDate, idNumber } = req.body;
+    
+    // Get product
+    const product = await prisma.product.findUnique({
+      where: { id: parseInt(productId) },
+      include: { rules: true }
+    });
+    
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    // Get member
+    const member = await prisma.familyMember.findUnique({
+      where: { id: parseInt(memberId) }
+    });
+    
+    if (!member) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+    
+    // Calculate fair share
+    const allMembers = await prisma.familyMember.findMany();
+    const productRule = product.rules[0];
+    let eligibleMembers = [];
+    
+    if (!productRule || productRule.ruleType === 'everyone') {
+      eligibleMembers = allMembers;
+    } else if (productRule.ruleType === 'children_only') {
+      eligibleMembers = allMembers.filter(m => m.isChild);
+    } else if (productRule.ruleType === 'adults_only') {
+      eligibleMembers = allMembers.filter(m => !m.isChild);
+    }
+    
+    if (eligibleMembers.length === 0) {
+      return res.status(400).json({ error: 'No eligible members for this product' });
+    }
+    
+    // Calculate original quantity
+    const allProductTransactions = await prisma.transaction.findMany({
+      where: { productId: parseInt(productId) }
+    });
+    const totalTakenFromProduct = allProductTransactions.reduce((sum, t) => sum + t.quantity, 0);
+    const originalQuantity = product.quantity + totalTakenFromProduct;
+    const fairShare = Math.floor(originalQuantity / eligibleMembers.length);
+    
+    // Calculate how much the member has already taken
+    const existingTransactions = await prisma.transaction.findMany({
+      where: {
+        productId: parseInt(productId),
+        memberId: parseInt(memberId)
+      }
+    });
+    const totalTaken = existingTransactions.reduce((sum, t) => sum + t.quantity, 0);
+    
+    // Calculate how much the member has already transferred
+    const existingTransfersOut = await prisma.shareTransfer.findMany({
+      where: {
+        productId: parseInt(productId),
+        fromMemberId: parseInt(memberId)
+      }
+    });
+    const totalTransferred = existingTransfersOut.reduce((sum, t) => sum + t.quantity, 0);
+    
+    // Calculate how much the member has received from transfers
+    const existingTransfersIn = await prisma.shareTransfer.findMany({
+      where: {
+        productId: parseInt(productId),
+        toMemberId: parseInt(memberId)
+      }
+    });
+    const totalReceived = existingTransfersIn.reduce((sum, t) => sum + t.quantity, 0);
+    
+    // Validate deposit amount (minimum 50, maximum 1000)
+    const depositAmount = parseFloat(amount);
+    
+    if (isNaN(depositAmount) || depositAmount < 50) {
+      return res.status(400).json({ 
+        error: 'סכום הפיקדון המינימלי הוא 50 ₪' 
+      });
+    }
+    
+    if (depositAmount > 1000) {
+      return res.status(400).json({ 
+        error: 'סכום הפיקדון המקסימלי הוא 1000 ₪' 
+      });
+    }
+    
+    // Validate card details only if payment method is card
+    if (paymentMethod === 'card') {
+      if (!cardNumber || !cvv || !expiryDate || !idNumber) {
+        return res.status(400).json({ 
+          error: 'נדרשים כל פרטי כרטיס האשראי לתשלום בכרטיס' 
+        });
+      }
+    }
+    
+    // Create deposit
+    const deposit = await prisma.deposit.create({
+      data: {
+        productId: parseInt(productId),
+        memberId: parseInt(memberId),
+        amount: parseFloat(amount),
+        paymentMethod: paymentMethod || 'card',
+        cardNumber: paymentMethod === 'card' ? (cardNumber || null) : null,
+        cvv: paymentMethod === 'card' ? (cvv || null) : null,
+        expiryDate: paymentMethod === 'card' ? (expiryDate || null) : null,
+        idNumber: paymentMethod === 'card' ? (idNumber || null) : null
+      },
+      include: {
+        product: true,
+        member: true
+      }
+    });
+    
+    res.json(deposit);
+  } catch (error) {
+    console.error('Error creating deposit:', error);
+    res.status(500).json({ error: error.message || 'שגיאה ביצירת הפיקדון' });
+  }
+});
+
+app.get('/api/deposits', async (req, res) => {
+  try {
+    // Check if deposit model exists
+    if (!prisma.deposit) {
+      return res.json([]);
+    }
+    
+    const { memberId, productId } = req.query;
+    const where = {};
+    
+    if (memberId) {
+      where.memberId = parseInt(memberId);
+    }
+    
+    if (productId) {
+      where.productId = parseInt(productId);
+    }
+    
+    const deposits = await prisma.deposit.findMany({
+      where,
+      include: {
+        product: true,
+        member: true
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    res.json(deposits);
+  } catch (error) {
+    console.error('Error fetching deposits:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/deposits/:id', async (req, res) => {
+  try {
+    // Check if deposit model exists
+    if (!prisma.deposit) {
+      return res.status(500).json({ 
+        error: 'Deposit model not found. Please run: npx prisma generate and restart the server' 
+      });
+    }
+    
+    const { id } = req.params;
+    
+    await prisma.deposit.delete({
+      where: { id: parseInt(id) }
+    });
+    
+    res.json({ message: 'Deposit deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting deposit:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Dashboard data
 app.get('/api/dashboard', async (req, res) => {
   try {
