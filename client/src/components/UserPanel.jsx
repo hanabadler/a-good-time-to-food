@@ -1,0 +1,1063 @@
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import './UserPanel.css';
+
+const API_URL = 'http://localhost:3001/api';
+
+function UserPanel() {
+  const [members, setMembers] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [shareTransfers, setShareTransfers] = useState([]);
+  const [shareRequests, setShareRequests] = useState([]);
+  const [selectedMember, setSelectedMember] = useState(null);
+  const [showTransactionModal, setShowTransactionModal] = useState(false);
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [showRequestModal, setShowRequestModal] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [transactionForm, setTransactionForm] = useState({ quantity: '', notes: '' });
+  const [transferForm, setTransferForm] = useState({ quantity: '', toMemberId: '' });
+  const [requestForm, setRequestForm] = useState({ quantity: '', toMemberId: '' });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchData();
+  }, [selectedMember]);
+
+  useEffect(() => {
+    if (!selectedMember) return;
+    
+    const interval = setInterval(() => {
+      fetchData();
+    }, 5000); // Refresh every 5 seconds
+    
+    return () => clearInterval(interval);
+  }, [selectedMember]);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const promises = [
+        axios.get(`${API_URL}/family-members`),
+        axios.get(`${API_URL}/products`),
+        axios.get(`${API_URL}/transactions`),
+        axios.get(`${API_URL}/share-transfers`)
+      ];
+      
+      // Always fetch requests if selectedMember exists
+      if (selectedMember) {
+        promises.push(axios.get(`${API_URL}/share-requests?memberId=${selectedMember.id}`));
+      } else {
+        promises.push(Promise.resolve({ data: [] }));
+      }
+      
+      const [membersRes, productsRes, transactionsRes, transfersRes, requestsRes] = await Promise.all(promises);
+      setMembers(membersRes.data);
+      setProducts(productsRes.data);
+      setTransactions(transactionsRes.data);
+      setShareTransfers(transfersRes.data);
+      // Only update requests if we have selectedMember, otherwise keep existing requests
+      if (selectedMember) {
+        setShareRequests(requestsRes.data || []);
+      }
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      // Don't clear requests on error, keep existing ones
+      // Only show alert on initial load
+      if (loading) {
+        alert('שגיאה בטעינת הנתונים. אנא רענן את הדף.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleProductClick = (product) => {
+    if (!selectedMember) {
+      alert('אנא בחרו קודם את שמכם');
+      return;
+    }
+    
+    const totalAvailable = getTotalAvailable(product);
+    if (totalAvailable <= 0) {
+      alert('אין לך הקצבה זמינה מהמוצר הזה');
+      return;
+    }
+    
+    setSelectedProduct(product);
+    const availableInt = Math.floor(totalAvailable);
+    setTransactionForm({ quantity: availableInt > 0 ? availableInt.toString() : '', notes: '' });
+    setShowTransactionModal(true);
+  };
+
+  const handleTransactionSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post(`${API_URL}/transactions`, {
+        productId: selectedProduct.id,
+        memberId: selectedMember.id,
+        quantity: parseInt(transactionForm.quantity),
+        notes: transactionForm.notes
+      });
+      setShowTransactionModal(false);
+      setSelectedProduct(null);
+      setTransactionForm({ quantity: '', notes: '' });
+      fetchData();
+    } catch (error) {
+      console.error('Error creating transaction:', error);
+      alert(error.response?.data?.error || 'שגיאה ביצירת העסקה');
+    }
+  };
+
+  const getRuleLabel = (ruleType) => {
+    const rules = {
+      'everyone': 'כולם',
+      'children_only': 'ילדים בלבד',
+      'adults_only': 'מבוגרים בלבד'
+    };
+    return rules[ruleType] || ruleType;
+  };
+
+  const canTakeProduct = (product) => {
+    if (!selectedMember) return false;
+    const rule = product.rules && product.rules[0];
+    if (!rule) return true;
+    
+    if (rule.ruleType === 'children_only' && !selectedMember.isChild) return false;
+    if (rule.ruleType === 'adults_only' && selectedMember.isChild) return false;
+    return true;
+  };
+
+  // Calculate original quantity (current quantity + all transactions for this product)
+  const getOriginalQuantity = (product) => {
+    const productTransactions = transactions.filter(t => t.productId === product.id);
+    const totalTaken = productTransactions.reduce((sum, t) => sum + t.quantity, 0);
+    return product.quantity + totalTaken; // Current + all taken = original
+  };
+
+  // Calculate fair share for a product
+  const calculateFairShare = (product) => {
+    if (!selectedMember) return 0;
+    
+    const originalQuantity = getOriginalQuantity(product);
+    if (originalQuantity <= 0) return 0;
+    
+    const rule = product.rules && product.rules[0];
+    let eligibleMembers = [];
+    
+    if (!rule || rule.ruleType === 'everyone') {
+      // Everyone can take
+      eligibleMembers = members;
+    } else if (rule.ruleType === 'children_only') {
+      // Only children
+      eligibleMembers = members.filter(m => m.isChild);
+    } else if (rule.ruleType === 'adults_only') {
+      // Only adults
+      eligibleMembers = members.filter(m => !m.isChild);
+    }
+    
+    if (eligibleMembers.length === 0) return 0;
+    
+    // Calculate fair share: original quantity divided by number of eligible members
+    const fairShare = originalQuantity / eligibleMembers.length;
+    return Math.floor(fairShare); // Return integer only
+  };
+
+  // Calculate how much the selected member has already taken from a product
+  const getTakenAmount = (productId) => {
+    if (!selectedMember) return 0;
+    
+    const memberTransactions = transactions.filter(
+      t => t.memberId === selectedMember.id && t.productId === productId
+    );
+    
+    const totalTaken = memberTransactions.reduce((sum, t) => sum + t.quantity, 0);
+    return Math.floor(totalTaken);
+  };
+
+  // Calculate how much the selected member has transferred from a product
+  const getTransferredAmount = (productId) => {
+    if (!selectedMember) return 0;
+    
+    const memberTransfers = shareTransfers.filter(
+      t => t.fromMemberId === selectedMember.id && t.productId === productId
+    );
+    
+    const totalTransferred = memberTransfers.reduce((sum, t) => sum + t.quantity, 0);
+    return Math.floor(totalTransferred);
+  };
+
+  // Calculate how much the selected member has received from transfers
+  const getReceivedAmount = (productId) => {
+    if (!selectedMember) return 0;
+    
+    const memberReceived = shareTransfers.filter(
+      t => t.toMemberId === selectedMember.id && t.productId === productId
+    );
+    
+    const totalReceived = memberReceived.reduce((sum, t) => sum + t.quantity, 0);
+    return Math.floor(totalReceived);
+  };
+
+  // Calculate remaining fair share (fair share - already taken - already transferred)
+  // This is what's left from YOUR original allocation (not including what you received)
+  const getRemainingFairShare = (product) => {
+    const fairShare = calculateFairShare(product);
+    const taken = getTakenAmount(product.id);
+    const transferred = getTransferredAmount(product.id);
+    // Remaining = fair share - taken - transferred (NOT including received)
+    const remaining = fairShare - taken - transferred;
+    return Math.max(0, Math.floor(remaining)); // Don't allow negative, return integer only
+  };
+
+  // Calculate total available (remaining from your allocation + received transfers)
+  const getTotalAvailable = (product) => {
+    const remainingFromAllocation = getRemainingFairShare(product);
+    const received = getReceivedAmount(product.id);
+    // Total = what's left from your allocation + what you received from others
+    return remainingFromAllocation + received;
+  };
+
+  const handleTransferClick = (product) => {
+    if (!selectedMember) {
+      alert('אנא בחרו קודם את שמכם');
+      return;
+    }
+    
+    const remaining = getRemainingFairShare(product);
+    if (remaining <= 0) {
+      alert('אין לך הקצבה להעביר מהמוצר הזה (ההקצבה שלך כבר נלקחה או הועברה)');
+      return;
+    }
+    
+    setSelectedProduct(product);
+    setTransferForm({ quantity: remaining > 0 ? remaining.toString() : '', toMemberId: '' });
+    setShowTransferModal(true);
+  };
+
+  const handleTransferSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post(`${API_URL}/share-transfers`, {
+        productId: selectedProduct.id,
+        fromMemberId: selectedMember.id,
+        toMemberId: parseInt(transferForm.toMemberId),
+        quantity: parseInt(transferForm.quantity)
+      });
+      setShowTransferModal(false);
+      setSelectedProduct(null);
+      setTransferForm({ quantity: '', toMemberId: '' });
+      fetchData();
+    } catch (error) {
+      console.error('Error creating transfer:', error);
+      alert(error.response?.data?.error || 'שגיאה בהעברת הקצבה');
+    }
+  };
+
+  const formatDate = (dateString) => {
+    const date = new Date(dateString);
+    return date.toLocaleString('he-IL', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  // Calculate remaining fair share for a specific member (for checking if they have available share)
+  const getMemberRemainingFairShare = (product, memberId) => {
+    const fairShare = calculateFairShare(product);
+    
+    const memberTransactions = transactions.filter(
+      t => t.memberId === memberId && t.productId === product.id
+    );
+    const totalTaken = memberTransactions.reduce((sum, t) => sum + t.quantity, 0);
+    
+    const memberTransfers = shareTransfers.filter(
+      t => t.fromMemberId === memberId && t.productId === product.id
+    );
+    const totalTransferred = memberTransfers.reduce((sum, t) => sum + t.quantity, 0);
+    
+    const remaining = fairShare - totalTaken - totalTransferred;
+    return Math.max(0, Math.floor(remaining));
+  };
+
+  const handleRequestClick = (product) => {
+    if (!selectedMember) {
+      alert('אנא בחרו קודם את שמכם');
+      return;
+    }
+    
+    setSelectedProduct(product);
+    setRequestForm({ quantity: '1', toMemberId: '' });
+    setShowRequestModal(true);
+  };
+
+  const handleRequestSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post(`${API_URL}/share-requests`, {
+        productId: selectedProduct.id,
+        fromMemberId: selectedMember.id,
+        toMemberId: parseInt(requestForm.toMemberId),
+        quantity: parseInt(requestForm.quantity)
+      });
+      setShowRequestModal(false);
+      setSelectedProduct(null);
+      setRequestForm({ quantity: '', toMemberId: '' });
+      fetchData();
+    } catch (error) {
+      console.error('Error creating request:', error);
+      alert(error.response?.data?.error || 'שגיאה בבקשת הקצבה');
+    }
+  };
+
+  const handleApproveRequest = async (requestId) => {
+    try {
+      await axios.put(`${API_URL}/share-requests/${requestId}/approve`);
+      fetchData();
+    } catch (error) {
+      console.error('Error approving request:', error);
+      alert(error.response?.data?.error || 'שגיאה באישור הבקשה');
+    }
+  };
+
+  const handleRejectRequest = async (requestId) => {
+    try {
+      await axios.put(`${API_URL}/share-requests/${requestId}/reject`);
+      fetchData();
+    } catch (error) {
+      console.error('Error rejecting request:', error);
+      alert(error.response?.data?.error || 'שגיאה בדחיית הבקשה');
+    }
+  };
+
+  const handleCancelRequest = async (requestId) => {
+    if (!window.confirm('האם אתה בטוח שברצונך לבטל את הבקשה?')) {
+      return;
+    }
+    try {
+      await axios.delete(`${API_URL}/share-requests/${requestId}`);
+      fetchData();
+    } catch (error) {
+      console.error('Error cancelling request:', error);
+      alert(error.response?.data?.error || 'שגיאה בביטול הבקשה');
+    }
+  };
+
+  const handleCancelTransaction = async (transactionId) => {
+    if (!window.confirm('האם אתה בטוח שברצונך לבטל את לקיחת המוצר? הכמות תוחזר למלאי.')) {
+      return;
+    }
+    try {
+      await axios.delete(`${API_URL}/transactions/${transactionId}`);
+      fetchData();
+    } catch (error) {
+      console.error('Error cancelling transaction:', error);
+      alert(error.response?.data?.error || 'שגיאה בביטול לקיחת המוצר');
+    }
+  };
+
+  // Get pending requests sent to me
+  const getPendingRequestsToMe = () => {
+    if (!selectedMember || !shareRequests || shareRequests.length === 0) return [];
+    return shareRequests.filter(
+      r => r && r.toMemberId === selectedMember.id && r.status === 'pending'
+    );
+  };
+
+  // Get my pending requests
+  const getMyPendingRequests = () => {
+    if (!selectedMember || !shareRequests || shareRequests.length === 0) return [];
+    return shareRequests.filter(
+      r => r && r.fromMemberId === selectedMember.id && r.status === 'pending'
+    );
+  };
+
+  return (
+    <div className="user-panel">
+      <div className="container">
+        <h1 className="page-title">ממשק משתמש</h1>
+
+        {!selectedMember && (
+          <div className="card member-selector">
+            <h2 className="card-title">בחרו את שמכם:</h2>
+            {loading ? (
+              <p style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
+                טוען...
+              </p>
+            ) : members.length === 0 ? (
+              <p style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
+                אין משתמשים במערכת. אנא הוסף משתמשים בממשק הניהול.
+              </p>
+            ) : (
+              <div className="member-grid">
+                {members.map(member => (
+                  <button
+                    key={member.id}
+                    className="member-card"
+                    onClick={() => setSelectedMember(member)}
+                  >
+                    <div className="member-icon">{member.isChild ? '👶' : '👤'}</div>
+                    <div className="member-name">{member.name}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {selectedMember && (
+          <>
+            <div className="card welcome-card">
+              <div className="welcome-content">
+                <h2>שלום {selectedMember.name}! 👋</h2>
+                <button 
+                  className="btn btn-secondary"
+                  onClick={() => setSelectedMember(null)}
+                >
+                  החלף משתמש
+                </button>
+              </div>
+            </div>
+
+            <div className="card">
+              <h2 className="card-title">📦 המלאי הזמין</h2>
+              {products.length === 0 ? (
+                <p style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
+                  אין מוצרים במלאי
+                </p>
+              ) : (
+                <div className="products-grid">
+                  {products.map(product => {
+                    const rule = product.rules && product.rules[0];
+                    const canTake = canTakeProduct(product);
+                    const isAvailable = product.quantity > 0;
+                    const remaining = getRemainingFairShare(product);
+                    const totalAvailable = getTotalAvailable(product);
+                    const hasRemaining = totalAvailable > 0;
+                    
+                    return (
+                      <div
+                        key={product.id}
+                        className={`product-card ${!canTake || !isAvailable || !hasRemaining ? 'disabled' : ''}`}
+                      >
+                        <div className="product-header">
+                          <h3>{product.name}</h3>
+                          {!canTake && (
+                            <span className="badge badge-warning">
+                              {getRuleLabel(rule ? rule.ruleType : 'everyone')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="product-info">
+                          <p className="product-quantity">
+                            <strong>כמות:</strong> {product.quantity}{product.unit ? ` ${product.unit}` : ''}
+                          </p>
+                          {canTake && isAvailable && (
+                            <>
+                              <p className="product-fair-share" style={{ 
+                                color: hasRemaining ? '#4CAF50' : '#f44336', 
+                                fontWeight: 'bold',
+                                marginTop: '0.5rem',
+                                fontSize: '0.95rem'
+                              }}>
+                                {hasRemaining ? (
+                                  <>זמין לך: {totalAvailable}{product.unit ? ` ${product.unit}` : ''}</>
+                                ) : (
+                                  <>לקחת את כל ההקצבה שלך</>
+                                )}
+                              </p>
+                              {getTakenAmount(product.id) > 0 && (
+                                <p style={{ 
+                                  color: '#666', 
+                                  fontSize: '0.85rem',
+                                  marginTop: '0.25rem'
+                                }}>
+                                  כבר לקחת: {getTakenAmount(product.id)}{product.unit ? ` ${product.unit}` : ''}
+                                </p>
+                              )}
+                              {getTransferredAmount(product.id) > 0 && (
+                                <p style={{ 
+                                  color: '#ff9800', 
+                                  fontSize: '0.85rem',
+                                  marginTop: '0.25rem'
+                                }}>
+                                  העברת: {getTransferredAmount(product.id)}{product.unit ? ` ${product.unit}` : ''}
+                                </p>
+                              )}
+                              {getReceivedAmount(product.id) > 0 && (
+                                <p style={{ 
+                                  color: '#2196F3', 
+                                  fontSize: '0.85rem',
+                                  marginTop: '0.25rem'
+                                }}>
+                                  קיבלת: {getReceivedAmount(product.id)}{product.unit ? ` ${product.unit}` : ''}
+                                </p>
+                              )}
+                            </>
+                          )}
+                          {rule && canTake && (
+                            <p className="product-rule">
+                              <small>חוק: {getRuleLabel(rule.ruleType)}</small>
+                            </p>
+                          )}
+                        </div>
+                        {isAvailable && canTake && (
+                          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                            {hasRemaining && (
+                              <button 
+                                className="btn-take"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleProductClick(product);
+                                }}
+                                style={{ flex: 1, minWidth: '100px' }}
+                              >
+                                קח מוצר
+                              </button>
+                            )}
+                            {getRemainingFairShare(product) > 0 && (
+                              <button 
+                                className="btn-take"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleTransferClick(product);
+                                }}
+                                style={{ 
+                                  flex: 1,
+                                  minWidth: '100px',
+                                  background: 'linear-gradient(135deg, #ff9800 0%, #f57c00 100%)',
+                                  border: 'none'
+                                }}
+                              >
+                                העבר הקצבה
+                              </button>
+                            )}
+                            <button 
+                              className="btn-take"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRequestClick(product);
+                              }}
+                              style={{ 
+                                flex: 1,
+                                minWidth: '100px',
+                                background: 'linear-gradient(135deg, #2196F3 0%, #1976D2 100%)',
+                                border: 'none'
+                              }}
+                            >
+                              בקש הקצבה
+                            </button>
+                          </div>
+                        )}
+                        {isAvailable && canTake && !hasRemaining && (
+                          <p className="out-of-stock" style={{ color: '#f44336' }}>לקחת את כל ההקצבה</p>
+                        )}
+                        {!isAvailable && (
+                          <p className="out-of-stock">אזל מהמלאי</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {getPendingRequestsToMe().length > 0 && (
+              <div className="card" style={{ background: 'linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%)', border: '2px solid #ff9800' }}>
+                <h2 className="card-title">🔔 בקשות ממתינות לאישור</h2>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
+                  {getPendingRequestsToMe().map(request => (
+                    <div key={request.id} style={{
+                      background: 'white',
+                      padding: '1rem',
+                      borderRadius: '10px',
+                      border: '1px solid #ff9800',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}>
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
+                          {request.fromMember.name} מבקש {request.quantity}{request.product.unit ? ` ${request.product.unit}` : ''} של {request.product.name}
+                        </div>
+                        <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                          {formatDate(request.createdAt)}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button
+                          className="btn-take"
+                          onClick={() => handleApproveRequest(request.id)}
+                          style={{
+                            background: 'linear-gradient(135deg, #4CAF50 0%, #45a049 100%)',
+                            border: 'none',
+                            padding: '0.5rem 1rem'
+                          }}
+                        >
+                          אישר
+                        </button>
+                        <button
+                          className="btn-take"
+                          onClick={() => handleRejectRequest(request.id)}
+                          style={{
+                            background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
+                            border: 'none',
+                            padding: '0.5rem 1rem'
+                          }}
+                        >
+                          דחה
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {getMyPendingRequests().length > 0 && (
+              <div className="card" style={{ background: 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)', border: '2px solid #2196F3' }}>
+                <h2 className="card-title">📬 הבקשות שלי</h2>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
+                  {getMyPendingRequests().map(request => (
+                    <div key={request.id} style={{
+                      background: 'white',
+                      padding: '1rem',
+                      borderRadius: '10px',
+                      border: '1px solid #2196F3',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}>
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
+                          ביקשת {request.quantity}{request.product.unit ? ` ${request.product.unit}` : ''} של {request.product.name} מ-{request.toMember.name}
+                        </div>
+                        <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                          {formatDate(request.createdAt)} • ממתין לאישור
+                        </div>
+                      </div>
+                      <button
+                        className="btn-take"
+                        onClick={() => handleCancelRequest(request.id)}
+                        style={{
+                          background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
+                          border: 'none',
+                          padding: '0.5rem 1rem',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        בטל בקשה
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="card">
+              <h2 className="card-title">📝 לוג פעילות</h2>
+              {transactions.length === 0 && shareTransfers.length === 0 ? (
+                <p style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
+                  אין פעילות עדיין
+                </p>
+              ) : (
+                <div className="transactions-list">
+                  {[...transactions.map(t => ({ ...t, type: 'transaction', sortDate: new Date(t.createdAt) })), 
+                     ...shareTransfers.map(t => ({ ...t, type: 'transfer', sortDate: new Date(t.createdAt) }))]
+                    .sort((a, b) => b.sortDate - a.sortDate)
+                    .map(item => {
+                      if (item.type === 'transaction') {
+                        const isMyTransaction = selectedMember && item.memberId === selectedMember.id;
+                        return (
+                          <div key={`t-${item.id}`} className="log-item" style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                          }}>
+                            <div style={{ flex: 1 }}>
+                              <div className="log-item-header">
+                                <span className="log-item-name">
+                                  {item.member.name} לקח {item.product.name}
+                                </span>
+                                <span className="log-item-time">
+                                  {formatDate(item.createdAt)}
+                                </span>
+                              </div>
+                              <div className="log-item-details">
+                                כמות: {item.quantity}{item.product.unit ? ` ${item.product.unit}` : ''}
+                                {item.notes && ` • הערה: ${item.notes}`}
+                              </div>
+                            </div>
+                            {isMyTransaction && (
+                              <button
+                                className="btn-take"
+                                onClick={() => handleCancelTransaction(item.id)}
+                                style={{
+                                  background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
+                                  border: 'none',
+                                  padding: '0.5rem 1rem',
+                                  whiteSpace: 'nowrap',
+                                  marginLeft: '1rem'
+                                }}
+                              >
+                                בטל
+                              </button>
+                            )}
+                          </div>
+                        );
+                      } else {
+                        return (
+                          <div key={`tf-${item.id}`} className="log-item" style={{
+                            borderRight: '4px solid #ff9800',
+                            background: 'linear-gradient(90deg, rgba(255, 152, 0, 0.1) 0%, transparent 100%)'
+                          }}>
+                            <div className="log-item-header">
+                              <span className="log-item-name">
+                                🔄 {item.fromMember.name} העביר ל-{item.toMember.name} - {item.product.name}
+                              </span>
+                              <span className="log-item-time">
+                                {formatDate(item.createdAt)}
+                              </span>
+                            </div>
+                            <div className="log-item-details">
+                              כמות: {item.quantity}{item.product.unit ? ` ${item.product.unit}` : ''}
+                            </div>
+                          </div>
+                        );
+                      }
+                    })}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {showTransactionModal && selectedProduct && (
+          <div className="modal" onClick={() => setShowTransactionModal(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>קח {selectedProduct.name}</h2>
+                <button className="close-btn" onClick={() => setShowTransactionModal(false)}>×</button>
+              </div>
+              <form onSubmit={handleTransactionSubmit}>
+                <div className="form-group">
+                  <label>כמות (זמין: {selectedProduct.quantity}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}):</label>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      max={Math.floor(getTotalAvailable(selectedProduct))}
+                      value={transactionForm.quantity}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value) || 0;
+                        const maxAllowed = Math.floor(getTotalAvailable(selectedProduct));
+                        if (value > maxAllowed) {
+                          setTransactionForm({ ...transactionForm, quantity: maxAllowed.toString() });
+                        } else if (value < 1) {
+                          setTransactionForm({ ...transactionForm, quantity: '1' });
+                        } else {
+                          setTransactionForm({ ...transactionForm, quantity: e.target.value });
+                        }
+                      }}
+                      required
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        const available = Math.floor(getTotalAvailable(selectedProduct));
+                        if (available > 0) {
+                          setTransactionForm({ ...transactionForm, quantity: available.toString() });
+                        }
+                      }}
+                      style={{ whiteSpace: 'nowrap', fontSize: '0.9rem', padding: '0.5rem 1rem' }}
+                    >
+                      החלק שלי
+                    </button>
+                  </div>
+                  <small style={{ color: '#666', marginTop: '0.25rem', display: 'block' }}>
+                    החלק היחסי שלך: {calculateFairShare(selectedProduct)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}
+                    {getTakenAmount(selectedProduct.id) > 0 && (
+                      <> • כבר לקחת: {getTakenAmount(selectedProduct.id)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}</>
+                    )}
+                    {getTransferredAmount(selectedProduct.id) > 0 && (
+                      <> • העברת: {getTransferredAmount(selectedProduct.id)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}</>
+                    )}
+                    {getReceivedAmount(selectedProduct.id) > 0 && (
+                      <> • קיבלת: {getReceivedAmount(selectedProduct.id)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}</>
+                    )}
+                    {getTotalAvailable(selectedProduct) > 0 && (
+                      <> • זמין לך: {getTotalAvailable(selectedProduct)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}</>
+                    )}
+                  </small>
+                </div>
+                <div className="form-group">
+                  <label>הערה (אופציונלי):</label>
+                  <input
+                    type="text"
+                    value={transactionForm.notes}
+                    onChange={(e) => setTransactionForm({ ...transactionForm, notes: e.target.value })}
+                    placeholder="למשל: לקחתי לארוחת בוקר"
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setShowTransactionModal(false)}>
+                    ביטול
+                  </button>
+                  <button type="submit" className="btn btn-primary">
+                    אישור
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showTransferModal && selectedProduct && (
+          <div className="modal" onClick={() => setShowTransferModal(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{
+              background: 'linear-gradient(135deg, #ff9800 0%, #f57c00 100%)',
+              borderRadius: '20px',
+              boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)'
+            }}>
+              <div className="modal-header" style={{ 
+                background: 'rgba(255, 255, 255, 0.1)',
+                padding: '1.5rem',
+                borderRadius: '20px 20px 0 0',
+                borderBottom: '2px solid rgba(255, 255, 255, 0.2)'
+              }}>
+                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold' }}>
+                  🔄 העברת הקצבה - {selectedProduct.name}
+                </h2>
+                <button className="close-btn" onClick={() => setShowTransferModal(false)} style={{
+                  color: 'white',
+                  fontSize: '1.5rem',
+                  background: 'rgba(255, 255, 255, 0.2)',
+                  borderRadius: '50%',
+                  width: '35px',
+                  height: '35px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: 'none',
+                  cursor: 'pointer',
+                  transition: 'all 0.3s ease'
+                }}>×</button>
+              </div>
+              <form onSubmit={handleTransferSubmit} style={{ padding: '1.5rem', background: 'white' }}>
+                <div className="form-group">
+                  <label>כמות להעברה (נשאר מההקצבה שלך: {getRemainingFairShare(selectedProduct)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}):</label>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    max={getRemainingFairShare(selectedProduct)}
+                    value={transferForm.quantity}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value) || 0;
+                      const maxAllowed = Math.floor(getRemainingFairShare(selectedProduct));
+                      if (value > maxAllowed) {
+                        setTransferForm({ ...transferForm, quantity: maxAllowed.toString() });
+                      } else if (value < 1) {
+                        setTransferForm({ ...transferForm, quantity: '1' });
+                      } else {
+                        setTransferForm({ ...transferForm, quantity: e.target.value });
+                      }
+                    }}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>העבר ל:</label>
+                  <select
+                    value={transferForm.toMemberId}
+                    onChange={(e) => setTransferForm({ ...transferForm, toMemberId: e.target.value })}
+                    required
+                    style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ddd' }}
+                  >
+                    <option value="">בחר משתמש</option>
+                    {members
+                      .filter(m => m.id !== selectedMember.id)
+                      .map(member => (
+                        <option key={member.id} value={member.id}>
+                          {member.name} {member.isChild ? '(ילד)' : '(מבוגר)'}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                  <small style={{ color: '#666', marginTop: '0.25rem', display: 'block' }}>
+                    הקצבה שלך: {calculateFairShare(selectedProduct)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}
+                    {getTakenAmount(selectedProduct.id) > 0 && (
+                      <> • כבר לקחת: {getTakenAmount(selectedProduct.id)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}</>
+                    )}
+                    {getTransferredAmount(selectedProduct.id) > 0 && (
+                      <> • כבר העברת: {getTransferredAmount(selectedProduct.id)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}</>
+                    )}
+                    {getReceivedAmount(selectedProduct.id) > 0 && (
+                      <> • קיבלת: {getReceivedAmount(selectedProduct.id)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}</>
+                    )}
+                    {getRemainingFairShare(selectedProduct) > 0 && (
+                      <> • נשאר מההקצבה שלך: {getRemainingFairShare(selectedProduct)}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}</>
+                    )}
+                  </small>
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setShowTransferModal(false)}>
+                    ביטול
+                  </button>
+                  <button type="submit" className="btn btn-primary" style={{
+                    background: 'linear-gradient(135deg, #ff9800 0%, #f57c00 100%)',
+                    border: 'none'
+                  }}>
+                    העבר
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showRequestModal && selectedProduct && (
+          <div className="modal" onClick={() => setShowRequestModal(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{
+              background: 'linear-gradient(135deg, #2196F3 0%, #1976D2 100%)',
+              borderRadius: '20px',
+              boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)'
+            }}>
+              <div className="modal-header" style={{ 
+                background: 'rgba(255, 255, 255, 0.1)',
+                padding: '1.5rem',
+                borderRadius: '20px 20px 0 0',
+                borderBottom: '2px solid rgba(255, 255, 255, 0.2)'
+              }}>
+                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold' }}>
+                  📬 בקשת הקצבה - {selectedProduct.name}
+                </h2>
+                <button className="close-btn" onClick={() => setShowRequestModal(false)} style={{
+                  color: 'white',
+                  fontSize: '1.5rem',
+                  background: 'rgba(255, 255, 255, 0.2)',
+                  borderRadius: '50%',
+                  width: '35px',
+                  height: '35px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: 'none',
+                  cursor: 'pointer',
+                  transition: 'all 0.3s ease'
+                }}>×</button>
+              </div>
+              <form onSubmit={handleRequestSubmit} style={{ padding: '1.5rem', background: 'white' }}>
+                <div className="form-group">
+                  <label>כמות לבקשה:</label>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={requestForm.quantity}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value) || 0;
+                      if (value < 1) {
+                        setRequestForm({ ...requestForm, quantity: '1' });
+                      } else {
+                        setRequestForm({ ...requestForm, quantity: e.target.value });
+                      }
+                    }}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>בקש מ:</label>
+                  <select
+                    value={requestForm.toMemberId}
+                    onChange={(e) => setRequestForm({ ...requestForm, toMemberId: e.target.value })}
+                    required
+                    style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ddd' }}
+                  >
+                    <option value="">בחר משתמש</option>
+                    {members
+                      .filter(m => {
+                        if (m.id === selectedMember.id) return false;
+                        const remaining = getMemberRemainingFairShare(selectedProduct, m.id);
+                        return remaining > 0;
+                      })
+                      .map(member => {
+                        const remaining = getMemberRemainingFairShare(selectedProduct, member.id);
+                        return (
+                          <option key={member.id} value={member.id}>
+                            {member.name} {member.isChild ? '(ילד)' : '(מבוגר)'} - נשאר לו: {remaining}{selectedProduct.unit ? ` ${selectedProduct.unit}` : ''}
+                          </option>
+                        );
+                      })}
+                    {members
+                      .filter(m => {
+                        if (m.id === selectedMember.id) return false;
+                        const remaining = getMemberRemainingFairShare(selectedProduct, m.id);
+                        return remaining <= 0;
+                      })
+                      .map(member => (
+                        <option key={member.id} value={member.id} disabled style={{ color: '#999' }}>
+                          {member.name} {member.isChild ? '(ילד)' : '(מבוגר)'} - למשתמש נגמר המלאי במוצר
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                {requestForm.toMemberId && (() => {
+                  const selectedToMember = members.find(m => m.id === parseInt(requestForm.toMemberId));
+                  if (selectedToMember) {
+                    const remaining = getMemberRemainingFairShare(selectedProduct, selectedToMember.id);
+                    if (remaining <= 0) {
+                      return (
+                        <div style={{ 
+                          padding: '0.75rem', 
+                          background: '#ffebee', 
+                          color: '#c62828', 
+                          borderRadius: '8px',
+                          marginTop: '0.5rem',
+                          border: '1px solid #ef5350'
+                        }}>
+                          ⚠️ למשתמש נגמר המלאי במוצר
+                        </div>
+                      );
+                    }
+                  }
+                  return null;
+                })()}
+                <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={() => setShowRequestModal(false)}>
+                    ביטול
+                  </button>
+                  <button 
+                    type="submit" 
+                    className="btn btn-primary" 
+                    style={{
+                      background: 'linear-gradient(135deg, #2196F3 0%, #1976D2 100%)',
+                      border: 'none'
+                    }}
+                    disabled={requestForm.toMemberId && (() => {
+                      const selectedToMember = members.find(m => m.id === parseInt(requestForm.toMemberId));
+                      if (selectedToMember) {
+                        const remaining = getMemberRemainingFairShare(selectedProduct, selectedToMember.id);
+                        return remaining <= 0;
+                      }
+                      return false;
+                    })()}
+                  >
+                    שלח בקשה
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default UserPanel;

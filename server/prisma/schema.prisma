@@ -1,0 +1,102 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model FamilyMember {
+  id        Int      @id @default(autoincrement())
+  name      String
+  isChild   Boolean  @default(false)
+  gender    String?  // "male" | "female" | "other" | null
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  transactions Transaction[]
+  transfersFrom ShareTransfer[] @relation("TransfersFrom")
+  transfersTo   ShareTransfer[] @relation("TransfersTo")
+  requestsFrom ShareRequest[] @relation("RequestsFrom")
+  requestsTo   ShareRequest[] @relation("RequestsTo")
+  
+  @@map("family_members")
+}
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  name        String
+  quantity    Int      @default(0)
+  unit        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  rules       ProductRule[]
+  transactions Transaction[]
+  shareTransfers ShareTransfer[]
+  shareRequests ShareRequest[]
+  
+  @@map("products")
+}
+
+model ProductRule {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  ruleType  String   // "everyone" | "children_only" | "adults_only" | "specific_members"
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("product_rules")
+}
+
+model Transaction {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  memberId  Int
+  quantity  Int
+  notes     String?
+  createdAt DateTime @default(now())
+  
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  member    FamilyMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  
+  @@map("transactions")
+}
+
+model ShareTransfer {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  fromMemberId Int
+  toMemberId   Int
+  quantity  Int
+  createdAt DateTime @default(now())
+  
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  fromMember FamilyMember @relation("TransfersFrom", fields: [fromMemberId], references: [id], onDelete: Cascade)
+  toMember   FamilyMember @relation("TransfersTo", fields: [toMemberId], references: [id], onDelete: Cascade)
+  
+  @@map("share_transfers")
+}
+
+model ShareRequest {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  fromMemberId Int  // מי מבקש
+  toMemberId   Int  // ממי מבקשים
+  quantity  Int
+  status    String  @default("pending") // "pending" | "approved" | "rejected" | "cancelled"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  fromMember FamilyMember @relation("RequestsFrom", fields: [fromMemberId], references: [id], onDelete: Cascade)
+  toMember   FamilyMember @relation("RequestsTo", fields: [toMemberId], references: [id], onDelete: Cascade)
+  
+  @@map("share_requests")
+}
