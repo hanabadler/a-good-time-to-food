@@ -1,0 +1,49 @@
+version: '3.8'
+
+# Development docker-compose file
+# Use this for local development with hot-reload
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.dev
+    container_name: tomer-app-server-dev
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DATABASE_URL=file:./prisma/dev.db
+      - NODE_ENV=development
+    volumes:
+      # Mount source code for hot-reload
+      - ./server:/app
+      - /app/node_modules
+      # Persist database
+      - ./server/prisma:/app/prisma
+    restart: unless-stopped
+    networks:
+      - tomer-app-network
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.dev
+    container_name: tomer-app-client-dev
+    ports:
+      - "8081:8081"
+    environment:
+      - VITE_API_URL=http://localhost:3001/api
+    volumes:
+      # Mount source code for hot-reload
+      - ./client:/app
+      - /app/node_modules
+    depends_on:
+      - server
+    restart: unless-stopped
+    networks:
+      - tomer-app-network
+
+networks:
+  tomer-app-network:
+    driver: bridge

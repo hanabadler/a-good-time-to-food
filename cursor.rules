@@ -1,25 +1,240 @@
-צור אפלקיציה הבאה:
-תאור הבעיהL
-הורה קונה אוכל 
-האוכל אמור להתחלק בצורה שווה בין הבני משפחה
-מערכת בעלת שני ממשקעם
-ממשק אחד הוא ממק ניהול שבוא מנהל המערכת רושם את הבני מפחה,
-מעדען את המלאיח המוצרים בבית 
-וממגדיר חוקה עבור כל מוצר 0 מה הלקוחה הנכונה
-לדוגמא
-מליקי מתחלק שוהה בין כולם
-חמצוצים רק בין ילדים
+# אפליקציית ניהול אוכל משפחתי - Family Food Management System
 
-ממשק שני עבור כלל המשתתפים 
-כל אחד לפםני לוקח מוצר מדווח מהמלאי המוצג מה הוא לוקחזה מדווח שאר המתתשיפם ב רישם שכולם רואים
+## תיאור הפרויקט
 
-ממשק סופר מגניב וקולי
-חויה טיל
-נוחות
+אפליקציה לניהול חלוקת אוכל בין בני משפחה עם מערכת הקצבה הוגנת, העברות הקצבה, בקשות הקצבה, ופיקדונות.
 
-טכני
-בסיס נתונים SQLLITE
-שימוש ב PRISM
-API"ד
-NODE
-REACT
+## בעיה ופתרון
+
+**הבעיה**: הורה קונה אוכל והאוכל אמור להתחלק בצורה שווה בין בני המשפחה.
+
+**הפתרון**: מערכת בעלת שני ממשקים:
+- **ממשק ניהול**: מנהל המערכת רושם את בני המשפחה, מעדכן את המלאי המוצרים בבית, ומגדיר חוקים עבור כל מוצר (מה הלקיחה הנכונה).
+- **ממשק משתמש**: כל משתתף בוחר את שמו, רואה את המלאי הזמין, לוקח מוצרים, ומדווח על לקיחות. כל המשתתפים רואים לוג פעילות משותף.
+
+## תכונות עיקריות
+
+### 1. ניהול בני משפחה
+- הוספה/עריכה/מחיקה של בני משפחה
+- בחירת סוג: מבוגר/ילד (radio buttons)
+- בחירת מגדר: זכר/נקבה/אחר/לא הוגדר (radio buttons)
+- תצוגה בטבלה עם כל הפרטים
+
+### 2. ניהול מוצרים
+- הוספה/עריכה/מחיקה של מוצרים
+- שדה כמות (מספרים שלמים בלבד)
+- שדה יחידה (אופציונלי)
+- הגדרת חוקי חלוקה:
+  - `everyone` - כולם
+  - `children_only` - רק ילדים
+  - `adults_only` - רק מבוגרים
+- כפתור "הצג היסטוריה" - מודל עם היסטוריית לקיחות מפורטת
+
+### 3. מערכת הקצבה הוגנת (Fair Share)
+- חישוב אוטומטי של החלק היחסי לכל משתמש
+- החישוב מבוסס על **הכמות המקורית** (כמות נוכחית + כל הלקיחות הקודמות)
+- כל משתמש מקבל: `Math.floor(originalQuantity / eligibleMembersCount)`
+- המערכת מונעת לקיחת יותר מההקצבה
+- תצוגה: "זמין לך: X", "כבר לקחת: Y", "העברת: Z", "קיבלת: W"
+
+### 4. העברת הקצבה (Share Transfer)
+- כל משתמש יכול להעביר את ההקצבה שלו למשתמש אחר
+- כפתור "העבר הקצבה" (כתום) ליד כל מוצר
+- מודל עם בחירת משתמש והכמות להעברה
+- ההעברה מפחיתה מההקצבה של השולח ומוסיפה למקבל
+- ניתן להעביר רק את מה שנשאר מההקצבה המקורית (לא כולל מה שקיבלת)
+
+### 5. בקשת הקצבה (Share Request)
+- כל משתמש יכול לבקש הקצבה ממשתמש אחר
+- כפתור "בקש הקצבה" (כחול) ליד כל מוצר
+- מודל עם בחירת משתמש והכמות לבקשה
+- המשתמש המבוקש רואה את הבקשה ברשימת "בקשות ממתינות לאישור"
+- אפשרות לאשר/לדחות בקשות
+- אם למשתמש נגמר המלאי - לא ניתן לבקש ממנו (מוצג: "למשתמש נגמר המלאי במוצר")
+- כאשר מאשרים בקשה - נוצרת העברת הקצבה אוטומטית
+
+### 6. פיקדונות (Deposits)
+- כל משתמש יכול להפקיד סכום כסף (פיקדון)
+- כפתור "💰 הפקד פיקדון" (סגול) ליד כל מוצר
+- **הפיקדון לא משפיע על ההקצבה** - הוא רק תשלום מראש
+- הגבלות: מינימום 50 ₪, מקסימום 1000 ₪
+- שני אמצעי תשלום:
+  - **כרטיס אשראי**: דורש מס' כרטיס, CVV, תוקף (MM/YY), תעודת זהות
+  - **מזומן**: רק רישום הסכום (יגבה במזומן בעת איסוף)
+- תצוגה: "💰 הפקדת: X ₪" בכרטיסי המוצרים
+- רשימת פיקדונות נפרדת
+- אפשרות לביטול פיקדון
+
+### 7. ביטול פעולות
+- ביטול לקיחת מוצר (מחזיר את הכמות למלאי)
+- ביטול בקשה ממתינה
+- ביטול פיקדון
+
+### 8. לוג פעילות
+- תצוגה משולבת של:
+  - לקיחות מוצרים (transactions)
+  - העברות הקצבה (share transfers) - בצבע כתום
+  - פיקדונות (deposits) - בצבע סגול
+- מיון לפי תאריך (החדש ביותר ראשון)
+- כפתורי ביטול לפעולות של המשתמש הנוכחי
+
+## טכנולוגיות
+
+### Backend
+- **Node.js** + **Express** - שרת API
+- **Prisma** - ORM לניהול בסיס הנתונים
+- **SQLite** - בסיס נתונים
+- **Port**: 3001
+
+### Frontend
+- **React** + **Vite** - ממשק משתמש
+- **React Router DOM** - ניווט
+- **Axios** - קריאות API
+- **Port**: 8081
+- **Proxy**: `/api` → `http://localhost:3001`
+
+## מבנה בסיס הנתונים
+
+### FamilyMember
+- `id`, `name`, `isChild`, `gender`, `createdAt`, `updatedAt`
+- Relations: transactions, transfersFrom, transfersTo, requestsFrom, requestsTo, deposits
+
+### Product
+- `id`, `name`, `quantity` (Int), `unit` (String?, optional), `createdAt`, `updatedAt`
+- Relations: rules, transactions, shareTransfers, shareRequests, deposits
+
+### ProductRule
+- `id`, `productId`, `ruleType` ("everyone" | "children_only" | "adults_only"), `createdAt`, `updatedAt`
+
+### Transaction
+- `id`, `productId`, `memberId`, `quantity` (Int), `notes`, `createdAt`
+- מייצג לקיחת מוצר
+
+### ShareTransfer
+- `id`, `productId`, `fromMemberId`, `toMemberId`, `quantity` (Int), `createdAt`
+- מייצג העברת הקצבה בין משתמשים
+
+### ShareRequest
+- `id`, `productId`, `fromMemberId`, `toMemberId`, `quantity` (Int), `status` ("pending" | "approved" | "rejected" | "cancelled"), `createdAt`, `updatedAt`
+- מייצג בקשה להעברת הקצבה (דורש אישור)
+
+### Deposit
+- `id`, `memberId`, `productId`, `amount` (Float), `paymentMethod` ("card" | "cash"), `cardNumber`, `cvv`, `expiryDate`, `idNumber`, `createdAt`
+- מייצג פיקדון (תשלום מראש) - לא משפיע על ההקצבה
+
+## לוגיקה עסקית חשובה
+
+### חישוב הקצבה הוגנת
+1. **חישוב הכמות המקורית**: `originalQuantity = product.quantity + sum(allTransactions.quantity)`
+2. **זיהוי משתמשים זכאים**: לפי `ProductRule.ruleType`
+3. **חישוב הקצבה**: `fairShare = Math.floor(originalQuantity / eligibleMembersCount)`
+4. **חישוב זמין**: `totalAvailable = fairShare - taken - transferred + received`
+   - `taken`: מה שלקחתי (transactions)
+   - `transferred`: מה שהעברתי (shareTransfers)
+   - `received`: מה שקיבלתי (shareTransfers)
+
+### העברת הקצבה
+- ניתן להעביר רק את מה שנשאר מההקצבה המקורית: `remainingFairShare = fairShare - taken - transferred`
+- המקבל יכול לקחת את מה שקיבל: `totalAvailable = remainingFairShare + received`
+
+### בקשת הקצבה
+- לא ניתן לבקש ממי שנגמר לו המלאי (`remainingFairShare <= 0`)
+- דורש אישור מהמבוקש
+- כאשר מאשרים - נוצרת העברת הקצבה אוטומטית
+
+### פיקדונות
+- **לא משפיעים על ההקצבה** - רק תשלום מראש
+- הגבלות: 50-1000 ₪
+- שני אמצעי תשלום: כרטיס אשראי או מזומן
+
+## API Endpoints
+
+### Family Members
+- `GET /api/family-members` - רשימת בני משפחה
+- `POST /api/family-members` - הוספת בן משפחה
+- `PUT /api/family-members/:id` - עדכון בן משפחה
+- `DELETE /api/family-members/:id` - מחיקת בן משפחה
+
+### Products
+- `GET /api/products` - רשימת מוצרים
+- `POST /api/products` - הוספת מוצר
+- `PUT /api/products/:id` - עדכון מוצר
+- `DELETE /api/products/:id` - מחיקת מוצר
+
+### Transactions
+- `GET /api/transactions` - רשימת לקיחות
+- `POST /api/transactions` - לקיחת מוצר (עם בדיקת הקצבה)
+- `DELETE /api/transactions/:id` - ביטול לקיחה
+
+### Share Transfers
+- `GET /api/share-transfers` - רשימת העברות
+- `POST /api/share-transfers` - העברת הקצבה
+
+### Share Requests
+- `GET /api/share-requests` - רשימת בקשות
+- `POST /api/share-requests` - יצירת בקשה
+- `PUT /api/share-requests/:id/approve` - אישור בקשה
+- `PUT /api/share-requests/:id/reject` - דחיית בקשה
+- `DELETE /api/share-requests/:id` - ביטול בקשה
+
+### Deposits
+- `GET /api/deposits` - רשימת פיקדונות
+- `POST /api/deposits` - יצירת פיקדון
+- `DELETE /api/deposits/:id` - ביטול פיקדון
+
+## כללי קוד
+
+### Frontend (React + Vite)
+- קבצים עם JSX: `.jsx` extension
+- State management: `useState`, `useEffect`
+- API calls: `axios` עם `API_URL = 'http://localhost:3001/api'`
+- Styling: inline styles + CSS classes
+- Hebrew UI: כל הטקסטים בעברית
+
+### Backend (Node.js + Express)
+- Type conversion: `parseInt()` לכמויות, `parseFloat()` לסכומי כסף
+- Validation: בדיקות בשרת לפני יצירת רשומות
+- Error handling: הודעות שגיאה בעברית
+- Prisma: שימוש ב-`prisma.modelName` (camelCase)
+
+### Database
+- SQLite עם Prisma
+- Migrations: לעיתים צריך ליצור סקריפטים ידניים בגלל מגבלות SQLite
+- `prisma generate` - צריך להריץ אחרי כל שינוי ב-schema
+
+## הערות חשובות
+
+1. **הקצבה מבוססת על הכמות המקורית** - לא על הכמות הנוכחית
+2. **פיקדונות לא משפיעים על ההקצבה** - רק תשלום מראש
+3. **כמויות הן מספרים שלמים בלבד** - `Int` ולא `Float`
+4. **שדה יחידה הוא אופציונלי** - `unit String?`
+5. **העברות מפחיתות מההקצבה המקורית** - לא כולל מה שקיבלת
+6. **לקיחות מוסיפות למקבל** - יכול לקחת את מה שקיבל
+
+## UI/UX
+
+- עיצוב מודרני עם gradients, animations, hover effects
+- אייקונים: 📦 📝 🔔 📬 💰 💳 💵 🔄
+- צבעים:
+  - כחול: בקשות הקצבה
+  - כתום: העברות הקצבה
+  - סגול: פיקדונות
+  - ירוק: פעולות חיוביות
+  - אדום: ביטולים/שגיאות
+  - אפור: היסטוריה
+
+## הרצה
+
+```bash
+# התקנה
+npm run install-all
+
+# הפעלת שרת (port 3001)
+cd server && npm run dev
+
+# הפעלת קליינט (port 8081)
+cd client && npm run dev
+
+# או הפעלה משולבת
+npm run dev
+```

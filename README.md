@@ -71,20 +71,46 @@ npm run dev
    - דיווח על לקיחת מוצרים
    - צפייה בלוג הפעילות
 
+## פריסה עם Docker
+
+### Production
+
+```bash
+# בנייה והרצה
+docker-compose up -d --build
+
+# האפליקציה תהיה זמינה ב: http://localhost
+```
+
+### Development (עם hot-reload)
+
+```bash
+docker-compose -f docker-compose.dev.yml up --build
+```
+
+לפרטים נוספים, ראה [DOCKER.md](./DOCKER.md)
+
 ## מבנה הפרויקט
 
 ```
 tomerApp/
 ├── server/          # Backend API
 │   ├── prisma/      # Prisma schema
+│   ├── Dockerfile   # Production Docker image
+│   ├── Dockerfile.dev # Development Docker image
 │   └── index.js     # Express server
 ├── client/          # React frontend (Vite)
 │   ├── index.html   # HTML entry point
 │   ├── vite.config.js
+│   ├── Dockerfile   # Production Docker image
+│   ├── Dockerfile.dev # Development Docker image
+│   ├── nginx.conf   # Nginx config for production
 │   └── src/
 │       ├── components/
-│       │   ├── AdminPanel.js
-│       │   └── UserPanel.js
-│       └── App.js
+│       │   ├── AdminPanel.jsx
+│       │   └── UserPanel.jsx
+│       └── App.jsx
+├── docker-compose.yml      # Production compose
+├── docker-compose.dev.yml  # Development compose
 └── package.json
 ```
