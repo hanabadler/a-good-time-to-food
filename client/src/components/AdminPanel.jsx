@@ -3,7 +3,7 @@ import axios from 'axios';
 import { 
   Users, Package, Plus, Edit, Trash2, History, X, Save, 
   UserPlus, PackagePlus, Calendar, Clock, ArrowRightLeft, 
-  FileText, AlertCircle
+  FileText, AlertCircle, Wallet, CreditCard, Banknote
 } from 'lucide-react';
 import './AdminPanel.css';
 
@@ -16,10 +16,13 @@ function AdminPanel() {
   const [showMemberModal, setShowMemberModal] = useState(false);
   const [showProductModal, setShowProductModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showDepositsModal, setShowDepositsModal] = useState(false);
   const [editingMember, setEditingMember] = useState(null);
   const [editingProduct, setEditingProduct] = useState(null);
   const [selectedProductHistory, setSelectedProductHistory] = useState(null);
   const [productTransactions, setProductTransactions] = useState([]);
+  const [selectedProductDeposits, setSelectedProductDeposits] = useState(null);
+  const [productDeposits, setProductDeposits] = useState([]);
   
   const [memberForm, setMemberForm] = useState({ name: '', isChild: false, gender: '' });
   const [productForm, setProductForm] = useState({ 
@@ -71,6 +74,18 @@ function AdminPanel() {
     }
   };
 
+  const handleShowDeposits = async (product) => {
+    try {
+      setSelectedProductDeposits(product);
+      const depositsRes = await axios.get(`${API_URL}/deposits?productId=${product.id}`);
+      setProductDeposits(depositsRes.data || []);
+      setShowDepositsModal(true);
+    } catch (error) {
+      console.error('Error fetching deposits:', error);
+      alert('שגיאה בטעינת הפיקדונות');
+    }
+  };
+
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleString('he-IL', {
@@ -80,6 +95,12 @@ function AdminPanel() {
       hour: '2-digit',
       minute: '2-digit'
     });
+  };
+
+  const getPaymentLabel = (paymentMethod) => {
+    if (paymentMethod === 'cash') return 'מזומן';
+    if (paymentMethod === 'card') return 'כרטיס אשראי';
+    return paymentMethod || '-';
   };
 
   const handleMemberSubmit = async (e) => {
@@ -324,6 +345,14 @@ function AdminPanel() {
                         >
                           <History size={14} style={{ marginLeft: '0.25rem', verticalAlign: 'middle' }} />
                           הצג היסטוריה
+                        </button>
+                        <button
+                          className="btn-small btn-secondary"
+                          onClick={() => handleShowDeposits(product)}
+                          style={{ backgroundColor: '#9C27B0', borderColor: '#9C27B0', color: '#fff', marginRight: '0.5rem' }}
+                        >
+                          <Wallet size={14} style={{ marginLeft: '0.25rem', verticalAlign: 'middle' }} />
+                          פיקדונות
                         </button>
                       </td>
                     </tr>
@@ -802,6 +831,76 @@ function AdminPanel() {
                 }
               }
             `}</style>
+          </div>
+        )}
+
+        {showDepositsModal && selectedProductDeposits && (
+          <div className="modal" onClick={() => setShowDepositsModal(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '700px' }}>
+              <div className="modal-header">
+                <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Wallet size={22} />
+                  פיקדונות - {selectedProductDeposits.name}
+                </h2>
+                <button className="close-btn" onClick={() => setShowDepositsModal(false)}>
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div style={{ padding: '1rem 0.25rem 0.5rem 0.25rem' }}>
+                {productDeposits.length === 0 ? (
+                  <div style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
+                    <AlertCircle size={44} style={{ marginBottom: '1rem', opacity: 0.5 }} />
+                    <div>אין פיקדונות למוצר זה</div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ padding: '0 1.5rem 1rem 1.5rem', color: '#666' }}>
+                      סה״כ פיקדונות: <strong style={{ color: '#333' }}>
+                        {productDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0).toFixed(2)} ₪
+                      </strong>
+                    </div>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>משתמש</th>
+                          <th>סכום</th>
+                          <th>אמצעי תשלום</th>
+                          <th>תאריך</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {productDeposits.map((d) => (
+                          <tr key={d.id}>
+                            <td>{d.member?.name || '-'}</td>
+                            <td><strong>{Number(d.amount || 0).toFixed(2)} ₪</strong></td>
+                            <td>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                                {d.paymentMethod === 'cash' ? <Banknote size={16} /> : <CreditCard size={16} />}
+                                {getPaymentLabel(d.paymentMethod)}
+                              </span>
+                            </td>
+                            <td>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <Clock size={14} />
+                                {formatDate(d.createdAt)}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 1.5rem 1.5rem' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setShowDepositsModal(false)}>
+                  <X size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                  סגור
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
