@@ -19,6 +19,14 @@ function UserPanel() {
   const [shareRequests, setShareRequests] = useState([]);
   const [deposits, setDeposits] = useState([]);
   const [selectedMember, setSelectedMember] = useState(null);
+  const [loginMembersView, setLoginMembersView] = useState(() => {
+    try {
+      const v = window.localStorage.getItem('loginMembersView');
+      return v === 'list' ? 'list' : 'grid';
+    } catch {
+      return 'grid';
+    }
+  }); // 'grid' | 'list'
   const [loginStep, setLoginStep] = useState('choose'); // 'choose' | 'scan' | 'totp'
   const [loginMember, setLoginMember] = useState(null);
   const [totpCode, setTotpCode] = useState('');
@@ -48,6 +56,14 @@ function UserPanel() {
   useEffect(() => {
     fetchData();
   }, [selectedMember]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('loginMembersView', loginMembersView);
+    } catch {
+      // ignore
+    }
+  }, [loginMembersView]);
 
   const extractClientCodeFromQrText = (text) => {
     if (!text) return null;
@@ -754,6 +770,32 @@ function UserPanel() {
             <div style={{ color: '#666', marginBottom: '0.75rem' }}>
               בחרו משתמש, סרקו עם המצלמה את ה־QR שהמשתמש מציג, ולאחר מכן הזינו קוד מאפליקציית Authenticator.
             </div>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+              <button
+                type="button"
+                className="btn-small btn-secondary"
+                onClick={() => setLoginMembersView('grid')}
+                style={{
+                  background: loginMembersView === 'grid' ? '#667eea' : 'white',
+                  borderColor: '#667eea',
+                  color: loginMembersView === 'grid' ? '#fff' : '#667eea'
+                }}
+              >
+                GRID
+              </button>
+              <button
+                type="button"
+                className="btn-small btn-secondary"
+                onClick={() => setLoginMembersView('list')}
+                style={{
+                  background: loginMembersView === 'list' ? '#667eea' : 'white',
+                  borderColor: '#667eea',
+                  color: loginMembersView === 'list' ? '#fff' : '#667eea'
+                }}
+              >
+                רשימה
+              </button>
+            </div>
             {loading ? (
               <p style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
                 טוען...
@@ -763,11 +805,11 @@ function UserPanel() {
                 אין משתמשים במערכת. אנא הוסף משתמשים בממשק הניהול.
               </p>
             ) : (
-              <div className="member-grid">
+              <div className={`member-grid ${loginMembersView === 'list' ? 'member-list' : ''}`}>
                 {members.map(member => (
                   <button
                     key={member.id}
-                    className="member-card"
+                    className={`member-card ${loginMembersView === 'list' ? 'member-card-list' : ''}`}
                     onClick={() => {
                       setLoginMember(member);
                       setLoginStep('scan');
