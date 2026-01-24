@@ -1,6 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 const { PrismaClient } = require('@prisma/client');
+const speakeasy = require('speakeasy');
+const { v4: uuidv4 } = require('uuid');
+require('dotenv').config();
+const https = require('https');
+const zlib = require('zlib');
+const crypto = require('crypto');
 
 const prisma = new PrismaClient();
 const app = express();
@@ -9,13 +15,439 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+function getAdminPasswordFromRequest(req) {
+  const fromHeader =
+    req.headers['x-admin-password'] ||
+    req.headers['x-admin-pass'] ||
+    req.headers['admin-password'];
+  const fromBody = req.body?.adminPassword || req.body?.password;
+  return (fromHeader || fromBody || '').toString();
+}
+
+function requireAdminPassword(req, res) {
+  const configured = (process.env.ADMIN_PASSWORD || '').trim();
+  // Default admin password (can be overridden via ADMIN_PASSWORD)
+  const expected = configured || '2014';
+  const provided = getAdminPasswordFromRequest(req);
+  if (!provided || provided !== expected) {
+    res.status(401).json({ error: 'Admin password required' });
+    return false;
+  }
+  return true;
+}
+
+function requireAddProductPassword(req, res) {
+  // "Add product" password must be ONLY 2014 (not configurable)
+  const expected = '2014';
+  const provided = getAdminPasswordFromRequest(req);
+  if (!provided || provided !== expected) {
+    res.status(401).json({ error: 'Add product password required' });
+    return false;
+  }
+  return true;
+}
+
+// Per-member passwords (PINs). Stored as hash+salt in DB.
+const DEFAULT_MEMBER_PINS_BY_NAME = {
+  'אלעד': '2007',
+  'תומר': '2014',
+  'נועה': '2009',
+  'לילך (אמא)': '1977',
+  'יואב (אבא)': '1976'
+};
+
+async function ensureFamilyMemberPinColumns() {
+  try {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "family_members" ADD COLUMN "pinSalt" TEXT;`).catch(() => {});
+    await prisma.$executeRawUnsafe(`ALTER TABLE "family_members" ADD COLUMN "pinHash" TEXT;`).catch(() => {});
+  } catch (e) {
+    console.error('Failed to ensure family_members pin columns:', e);
+  }
+}
+
+async function ensureProductAllocationColumns() {
+  try {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "products" ADD COLUMN "extraOffset" INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+  } catch (e) {
+    console.error('Failed to ensure products extraOffset column:', e);
+  }
+}
+
+async function getProductsExtraOffsetsMap() {
+  await ensureProductAllocationColumns();
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT id, extraOffset FROM products
+    `;
+    const map = new Map();
+    for (const r of rows || []) {
+      map.set(r.id, Number(r.extraOffset || 0));
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
+async function getProductExtraOffset(productId) {
+  await ensureProductAllocationColumns();
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT extraOffset FROM products WHERE id = ${parseInt(productId)} LIMIT 1
+    `;
+    const v = rows?.[0]?.extraOffset;
+    const n = typeof v === 'number' ? v : parseInt(String(v ?? 0), 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function computeEntitlementForMember({ originalQuantity, eligibleMembers, memberId, extraOffset }) {
+  const count = eligibleMembers.length;
+  if (!count) return 0;
+  const base = Math.floor(originalQuantity / count);
+  const remainder = ((originalQuantity % count) + count) % count;
+  if (remainder === 0) return base;
+
+  const sorted = [...eligibleMembers].sort((a, b) => a.id - b.id);
+  const idx = sorted.findIndex((m) => m.id === memberId);
+  if (idx < 0) return 0;
+
+  const offset = ((Number(extraOffset) || 0) % count + count) % count;
+  const relative = (idx - offset + count) % count;
+  const extra = relative < remainder ? 1 : 0;
+  return base + extra;
+}
+
+function pbkdf2Hash(pin, salt) {
+  // 100k iterations is fine for local admin PINs
+  return crypto.pbkdf2Sync(String(pin), salt, 100000, 32, 'sha256').toString('hex');
+}
+
+function timingSafeEqualHex(a, b) {
+  try {
+    const ab = Buffer.from(String(a), 'hex');
+    const bb = Buffer.from(String(b), 'hex');
+    if (ab.length !== bb.length) return false;
+    return crypto.timingSafeEqual(ab, bb);
+  } catch {
+    return false;
+  }
+}
+
+async function setMemberPinIfMissingByName(name, pin) {
+  await ensureFamilyMemberPinColumns();
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = pbkdf2Hash(pin, salt);
+  // Only set when empty (so pins remain stable unless you intentionally reset via DB)
+  await prisma.$executeRaw`
+    UPDATE family_members
+    SET pinSalt = ${salt}, pinHash = ${hash}
+    WHERE name = ${String(name)} AND (pinHash IS NULL OR pinHash = '')
+  `;
+}
+
+async function ensureDefaultPinsForKnownMembers() {
+  try {
+    await ensureFamilyMemberPinColumns();
+    for (const [name, pin] of Object.entries(DEFAULT_MEMBER_PINS_BY_NAME)) {
+      await setMemberPinIfMissingByName(name, pin);
+    }
+  } catch (e) {
+    console.error('Failed ensuring default member pins:', e);
+  }
+}
+
+async function getMemberRowByIdWithPin(id) {
+  await ensureFamilyMemberPinColumns();
+  const rows = await prisma.$queryRaw`
+    SELECT id, name, pinSalt, pinHash
+    FROM family_members
+    WHERE id = ${parseInt(id)}
+    LIMIT 1
+  `;
+  return rows?.[0] || null;
+}
+
+async function requireMemberPassword(req, res, memberId, actionLabel) {
+  await ensureDefaultPinsForKnownMembers();
+  const provided = getAdminPasswordFromRequest(req); // reuse same header/body
+  if (!provided) {
+    res.status(401).json({ error: `Password required${actionLabel ? `: ${actionLabel}` : ''}` });
+    return false;
+  }
+
+  const row = await getMemberRowByIdWithPin(memberId);
+  if (!row) {
+    res.status(404).json({ error: 'Member not found' });
+    return false;
+  }
+
+  // If still missing pin (unknown name), don't allow the action.
+  if (!row.pinSalt || !row.pinHash) {
+    res.status(400).json({ error: 'Password is not set for this member' });
+    return false;
+  }
+
+  const computed = pbkdf2Hash(provided, String(row.pinSalt));
+  const ok = timingSafeEqualHex(computed, String(row.pinHash));
+  if (!ok) {
+    res.status(401).json({ error: 'Wrong password' });
+    return false;
+  }
+
+  return true;
+}
+
+// Ensure auth/login columns exist in SQLite without requiring migrations
+async function ensureFamilyMemberAuthColumns() {
+  try {
+    // Add columns (SQLite throws if column exists - we swallow)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "family_members" ADD COLUMN "clientCode" TEXT;`).catch(() => {});
+    await prisma.$executeRawUnsafe(`ALTER TABLE "family_members" ADD COLUMN "totpSecret" TEXT;`).catch(() => {});
+    await prisma.$executeRawUnsafe(`ALTER TABLE "family_members" ADD COLUMN "totpEnabled" BOOLEAN NOT NULL DEFAULT 0;`).catch(() => {});
+
+    // Unique index on clientCode (multiple NULLs are allowed in SQLite)
+    await prisma.$executeRawUnsafe(
+      `CREATE UNIQUE INDEX IF NOT EXISTS "family_members_clientCode_key" ON "family_members"("clientCode");`
+    ).catch(() => {});
+  } catch (e) {
+    console.error('Failed to ensure family_members auth columns:', e);
+  }
+}
+
+function sanitizeMember(member) {
+  if (!member) return null;
+  return {
+    id: member.id,
+    name: member.name,
+    isChild: !!member.isChild,
+    gender: member.gender ?? null,
+    clientCode: member.clientCode ?? null,
+    totpEnabled: !!member.totpEnabled,
+    createdAt: member.createdAt,
+    updatedAt: member.updatedAt
+  };
+}
+
+async function getMemberRowById(id) {
+  const rows = await prisma.$queryRaw`
+    SELECT id, name, isChild, gender, clientCode, totpEnabled, createdAt, updatedAt
+    FROM family_members
+    WHERE id = ${parseInt(id)}
+    LIMIT 1
+  `;
+  return rows?.[0] || null;
+}
+
+async function getMemberRowByIdWithSecret(id) {
+  const rows = await prisma.$queryRaw`
+    SELECT id, name, isChild, gender, clientCode, totpEnabled, totpSecret, createdAt, updatedAt
+    FROM family_members
+    WHERE id = ${parseInt(id)}
+    LIMIT 1
+  `;
+  return rows?.[0] || null;
+}
+
+async function getMemberRowByClientCode(clientCode) {
+  const rows = await prisma.$queryRaw`
+    SELECT id, name, isChild, gender, clientCode, totpEnabled, totpSecret, createdAt, updatedAt
+    FROM family_members
+    WHERE clientCode = ${String(clientCode)}
+    LIMIT 1
+  `;
+  return rows?.[0] || null;
+}
+
+function buildTotpOtpauthUrl({ name, totpSecret }) {
+  const appName = process.env.TOTP_ISSUER || 'TomerApp';
+  if (!totpSecret) return null;
+  // speakeasy expects secret as base32 (we store base32)
+  return speakeasy.otpauthURL({
+    secret: String(totpSecret),
+    label: `${appName}:${name}`,
+    issuer: appName,
+    encoding: 'base32'
+  });
+}
+
+async function fetchUrlText(url) {
+  // Prefer fetch if available (handles gzip/br + redirects nicely)
+  if (typeof fetch === 'function') {
+    const res = await fetch(url, {
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TomerApp/1.0',
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'accept-language': 'he-IL,he;q=0.9,en-US;q=0.7,en;q=0.6'
+      }
+    });
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+    return await res.text();
+  }
+
+  // Fallback: https + gzip/deflate support
+  return await new Promise((resolve, reject) => {
+    const req = https.request(
+      url,
+      {
+        method: 'GET',
+        headers: {
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TomerApp/1.0',
+          'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'accept-language': 'he-IL,he;q=0.9,en-US;q=0.7,en;q=0.6',
+          'accept-encoding': 'gzip,deflate'
+        }
+      },
+      (res) => {
+        const chunks = [];
+        const enc = String(res.headers['content-encoding'] || '');
+        let stream = res;
+        if (enc.includes('gzip')) stream = res.pipe(zlib.createGunzip());
+        else if (enc.includes('deflate')) stream = res.pipe(zlib.createInflate());
+
+        stream.on('data', (c) => chunks.push(c));
+        stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        stream.on('error', reject);
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function decodeHtmlEntities(s) {
+  if (!s) return s;
+  return String(s)
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&#([0-9]+);/g, (_, num) => String.fromCharCode(parseInt(num, 10)));
+}
+
+function extractShufersalProductNames(html, { limit = 200 } = {}) {
+  const text = String(html || '');
+  const candidates = [];
+
+  // Common patterns seen in SPA payloads / product cards
+  const patterns = [
+    /"productName"\s*:\s*"([^"]{2,160})"/g,
+    /"name"\s*:\s*"([^"]{2,160})"\s*,\s*"code"\s*:\s*"?[0-9A-Za-z_-]{3,}"/g,
+    /data-testid="product-name"[^>]*>\s*([^<]{2,160})\s*</g,
+    /class="[^"]*(?:product|item)[^"]*(?:name|title)[^"]*"[^>]*>\s*([^<]{2,160})\s*</g
+  ];
+
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(text))) {
+      const raw = decodeHtmlEntities(m[1])
+        .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!raw) continue;
+      candidates.push(raw);
+      if (candidates.length > limit * 8) break;
+    }
+    if (candidates.length > limit * 8) break;
+  }
+
+  const blacklist = [
+    'שופרסל',
+    'חיפוש',
+    'התחבר',
+    'סניף',
+    'עגלת',
+    'קטגור'
+  ];
+
+  const uniq = [];
+  const seen = new Set();
+  for (const name of candidates) {
+    if (name.length < 2) continue;
+    if (name.length > 120) continue;
+    if (blacklist.some((b) => name.includes(b))) continue;
+    // drop obvious UI strings
+    if (/^(התחברות|הרשמה|המשך|סינון|מיון|הוספה)$/i.test(name)) continue;
+    if (!seen.has(name)) {
+      seen.add(name);
+      uniq.push(name);
+    }
+    if (uniq.length >= limit) break;
+  }
+  return uniq;
+}
+
+async function fetchJson(url) {
+  const txt = await fetchUrlText(url);
+  try {
+    return JSON.parse(txt);
+  } catch (e) {
+    throw new Error('Failed to parse JSON response');
+  }
+}
+
+function extractChpProductNames(data, { limit = 200 } = {}) {
+  const arr = Array.isArray(data) ? data : [];
+  const names = [];
+  const seen = new Set();
+
+  for (const item of arr) {
+    if (!item || item.id === 'next') continue;
+    const name =
+      (typeof item?.parts?.name_and_contents === 'string' && item.parts.name_and_contents.trim()) ||
+      (typeof item?.label === 'string' && item.label.trim()) ||
+      (typeof item?.value === 'string' && item.value.trim()) ||
+      '';
+
+    const cleaned = name.replace(/\s+/g, ' ').trim();
+    if (!cleaned) continue;
+    if (cleaned.length > 160) continue;
+    if (!seen.has(cleaned)) {
+      seen.add(cleaned);
+      names.push(cleaned);
+    }
+    if (names.length >= limit) break;
+  }
+
+  return names;
+}
+
+function getChpNextFrom(data) {
+  const arr = Array.isArray(data) ? data : [];
+  const next = arr.find((x) => x && x.id === 'next');
+  if (!next) return null;
+  const v = next.value;
+  const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function buildChpProductExtendedUrl({ term, from = 0 }) {
+  // Matches the curl the user provided
+  return (
+    `https://chp.co.il/autocompletion/product_extended` +
+    `?term=${encodeURIComponent(String(term))}` +
+    `&from=${encodeURIComponent(String(from))}` +
+    `&u=${encodeURIComponent(String(Math.random()))}` +
+    `&shopping_address=${encodeURIComponent('ראשון לציון ')}` +
+    `&shopping_address_city_id=8300` +
+    `&shopping_address_street_id=9000`
+  );
+}
+
 // Family Members Routes
 app.get('/api/family-members', async (req, res) => {
   try {
-    const members = await prisma.familyMember.findMany({
-      orderBy: { createdAt: 'desc' }
-    });
-    res.json(members);
+    await ensureFamilyMemberAuthColumns();
+    const rows = await prisma.$queryRaw`
+      SELECT id, name, isChild, gender, clientCode, totpEnabled, createdAt, updatedAt
+      FROM family_members
+      ORDER BY createdAt DESC
+    `;
+    res.json((rows || []).map(sanitizeMember));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -23,15 +455,35 @@ app.get('/api/family-members', async (req, res) => {
 
 app.post('/api/family-members', async (req, res) => {
   try {
+    if (!requireAdminPassword(req, res)) return;
     const { name, isChild, gender } = req.body;
-    const member = await prisma.familyMember.create({
+    await ensureFamilyMemberAuthColumns();
+    await ensureDefaultPinsForKnownMembers();
+
+    const clientCode = uuidv4();
+    const appName = process.env.TOTP_ISSUER || 'TomerApp';
+    const secret = speakeasy.generateSecret({
+      length: 20,
+      name: `${appName}:${name}`,
+      issuer: appName
+    });
+
+    const created = await prisma.familyMember.create({
       data: { 
         name, 
         isChild: isChild || false,
         gender: gender && gender !== '' ? gender : null
       }
     });
-    res.json(member);
+    // Write auth fields via raw SQL (works even if Prisma client isn't regenerated yet)
+    await prisma.$executeRaw`
+      UPDATE family_members
+      SET clientCode = ${clientCode}, totpSecret = ${secret.base32}, totpEnabled = 1
+      WHERE id = ${created.id}
+    `;
+
+    const row = await getMemberRowById(created.id);
+    res.json({ ...sanitizeMember(row), totpOtpauthUrl: secret.otpauth_url });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -40,8 +492,10 @@ app.post('/api/family-members', async (req, res) => {
 app.put('/api/family-members/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!await requireMemberPassword(req, res, id, 'edit')) return;
     const { name, isChild, gender } = req.body;
-    const member = await prisma.familyMember.update({
+    await ensureFamilyMemberAuthColumns();
+    const updated = await prisma.familyMember.update({
       where: { id: parseInt(id) },
       data: { 
         name, 
@@ -49,7 +503,8 @@ app.put('/api/family-members/:id', async (req, res) => {
         gender: gender && gender !== '' ? gender : null
       }
     });
-    res.json(member);
+    const row = await getMemberRowById(updated.id);
+    res.json(sanitizeMember(row));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -58,6 +513,8 @@ app.put('/api/family-members/:id', async (req, res) => {
 app.delete('/api/family-members/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!await requireMemberPassword(req, res, id, 'delete')) return;
+    await ensureFamilyMemberAuthColumns();
     await prisma.familyMember.delete({
       where: { id: parseInt(id) }
     });
@@ -67,23 +524,373 @@ app.delete('/api/family-members/:id', async (req, res) => {
   }
 });
 
+// Get existing credentials (Admin) - DOES NOT rotate
+app.post('/api/family-members/:id/credentials', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!await requireMemberPassword(req, res, id, 'credentials')) return;
+    await ensureFamilyMemberAuthColumns();
+
+    const existing = await getMemberRowByIdWithSecret(parseInt(id));
+    if (!existing) return res.status(404).json({ error: 'Member not found' });
+
+    // If missing credentials (older users), create once
+    if (!existing.clientCode || !existing.totpSecret) {
+      const clientCode = uuidv4();
+      const appName = process.env.TOTP_ISSUER || 'TomerApp';
+      const secret = speakeasy.generateSecret({
+        length: 20,
+        name: `${appName}:${existing.name}`,
+        issuer: appName
+      });
+      await prisma.$executeRaw`
+        UPDATE family_members
+        SET clientCode = ${clientCode}, totpSecret = ${secret.base32}, totpEnabled = 1
+        WHERE id = ${parseInt(id)}
+      `;
+      const row = await getMemberRowByIdWithSecret(parseInt(id));
+      return res.json({ ...sanitizeMember(row), totpOtpauthUrl: buildTotpOtpauthUrl(row) });
+    }
+
+    res.json({ ...sanitizeMember(existing), totpOtpauthUrl: buildTotpOtpauthUrl(existing) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reset/rotate credentials explicitly (Admin)
+app.post('/api/family-members/:id/credentials/reset', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!await requireMemberPassword(req, res, id, 'credentials_reset')) return;
+    await ensureFamilyMemberAuthColumns();
+
+    const existing = await getMemberRowById(parseInt(id));
+    if (!existing) return res.status(404).json({ error: 'Member not found' });
+
+    const clientCode = uuidv4();
+    const appName = process.env.TOTP_ISSUER || 'TomerApp';
+    const secret = speakeasy.generateSecret({
+      length: 20,
+      name: `${appName}:${existing.name}`,
+      issuer: appName
+    });
+
+    await prisma.$executeRaw`
+      UPDATE family_members
+      SET clientCode = ${clientCode}, totpSecret = ${secret.base32}, totpEnabled = 1
+      WHERE id = ${parseInt(id)}
+    `;
+
+    const row = await getMemberRowByIdWithSecret(parseInt(id));
+    res.json({ ...sanitizeMember(row), totpOtpauthUrl: buildTotpOtpauthUrl(row) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Verify member password (no side effects)
+app.post('/api/family-members/:id/verify-password', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!await requireMemberPassword(req, res, id, 'verify_password')) return;
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Auth: verify TOTP (2nd step)
+app.post('/api/auth/verify', async (req, res) => {
+  try {
+    const { memberId, clientCode, totp } = req.body || {};
+    await ensureFamilyMemberAuthColumns();
+
+    if (!totp) return res.status(400).json({ error: 'totp is required' });
+
+    let member = null; // will include totpSecret
+    if (memberId) {
+      const rows = await prisma.$queryRaw`
+        SELECT id, name, isChild, gender, clientCode, totpEnabled, totpSecret, createdAt, updatedAt
+        FROM family_members
+        WHERE id = ${parseInt(memberId)}
+        LIMIT 1
+      `;
+      member = rows?.[0] || null;
+    } else if (clientCode) {
+      member = await getMemberRowByClientCode(clientCode);
+    } else {
+      return res.status(400).json({ error: 'memberId or clientCode is required' });
+    }
+
+    if (!member) return res.status(404).json({ error: 'Member not found' });
+    if (!member.totpEnabled || !member.totpSecret) {
+      return res.status(400).json({ error: 'TOTP is not enabled for this member' });
+    }
+
+    const token = String(totp).replace(/\s/g, '');
+    const isValid = speakeasy.totp.verify({
+      secret: member.totpSecret,
+      encoding: 'base32',
+      token,
+      window: 1
+    });
+
+    if (!isValid) return res.status(401).json({ error: 'Invalid TOTP code' });
+
+    res.json({ member: sanitizeMember(member) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Products Routes
 app.get('/api/products', async (req, res) => {
   try {
+    await ensureProductAllocationColumns();
     const products = await prisma.product.findMany({
       include: {
         rules: true
       },
       orderBy: { createdAt: 'desc' }
     });
-    res.json(products);
+    const offsets = await getProductsExtraOffsetsMap();
+    res.json(
+      (products || []).map((p) => ({
+        ...p,
+        extraOffset: offsets.get(p.id) ?? 0
+      }))
+    );
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// Allocation report for a product (admin)
+app.get('/api/products/:id/allocation-report', async (req, res) => {
+  try {
+    if (!requireAdminPassword(req, res)) return;
+    await ensureProductAllocationColumns();
+
+    const { id } = req.params;
+    const productId = parseInt(id);
+
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      include: { rules: true }
+    });
+    if (!product) return res.status(404).json({ error: 'Product not found' });
+
+    const allMembers = await prisma.familyMember.findMany();
+    const rule = product.rules?.[0];
+    let eligibleMembers = [];
+    if (!rule || rule.ruleType === 'everyone') eligibleMembers = allMembers;
+    else if (rule.ruleType === 'children_only') eligibleMembers = allMembers.filter((m) => m.isChild);
+    else if (rule.ruleType === 'adults_only') eligibleMembers = allMembers.filter((m) => !m.isChild);
+    else eligibleMembers = allMembers;
+
+    const allProductTransactions = await prisma.transaction.findMany({
+      where: { productId },
+      include: { member: true }
+    });
+    const totalTakenFromProduct = allProductTransactions.reduce((sum, t) => sum + t.quantity, 0);
+    const originalQuantity = product.quantity + totalTakenFromProduct;
+
+    const transfers = await prisma.shareTransfer.findMany({
+      where: { productId },
+      include: { fromMember: true, toMember: true }
+    });
+
+    const extraOffset = await getProductExtraOffset(productId);
+    const count = eligibleMembers.length || 0;
+    const base = count ? Math.floor(originalQuantity / count) : 0;
+    const remainder = count ? ((originalQuantity % count) + count) % count : 0;
+    const sortedEligible = [...eligibleMembers].sort((a, b) => a.id - b.id);
+
+    const rows = sortedEligible.map((m) => {
+      const entitlement = computeEntitlementForMember({
+        originalQuantity,
+        eligibleMembers: sortedEligible,
+        memberId: m.id,
+        extraOffset
+      });
+      const taken = allProductTransactions
+        .filter((t) => t.memberId === m.id)
+        .reduce((sum, t) => sum + t.quantity, 0);
+      const transferredOut = transfers
+        .filter((t) => t.fromMemberId === m.id)
+        .reduce((sum, t) => sum + t.quantity, 0);
+      const received = transfers
+        .filter((t) => t.toMemberId === m.id)
+        .reduce((sum, t) => sum + t.quantity, 0);
+      const available = entitlement - taken - transferredOut + received;
+      return {
+        memberId: m.id,
+        memberName: m.name,
+        isChild: !!m.isChild,
+        entitlement,
+        extra: entitlement > base,
+        taken,
+        transferredOut,
+        received,
+        available
+      };
+    });
+
+    res.json({
+      product: { id: product.id, name: product.name, unit: product.unit, quantity: product.quantity },
+      ruleType: rule?.ruleType || 'everyone',
+      originalQuantity,
+      base,
+      remainder,
+      extraOffset,
+      rows
+    });
+  } catch (error) {
+    console.error('Allocation report failed:', error);
+    res.status(500).json({ error: error.message || 'Allocation report failed' });
+  }
+});
+
+// Bulk delete ALL products (dangerous)
+// body: { confirm: "DELETE_ALL_PRODUCTS" }
+app.post('/api/products/bulk-delete', async (req, res) => {
+  try {
+    if (!requireAddProductPassword(req, res)) return;
+    const { confirm } = req.body || {};
+    if (confirm !== 'DELETE_ALL_PRODUCTS') {
+      return res.status(400).json({ error: 'Missing confirmation' });
+    }
+
+    const result = await prisma.product.deleteMany({});
+    res.json({ deleted: result.count });
+  } catch (error) {
+    console.error('Bulk delete products failed:', error);
+    res.status(500).json({ error: error.message || 'Bulk delete failed' });
+  }
+});
+
+// Import products from CHP autocompletion/product_extended (JSON)
+// body: { query: string, limit?: number }
+app.post('/api/products/import/chp', async (req, res) => {
+  try {
+    if (!requireAdminPassword(req, res)) return;
+    const { query, limit } = req.body || {};
+    const q = String(query || '').trim();
+    if (!q) return res.status(400).json({ error: 'query is required' });
+
+    const desired = Math.min(parseInt(limit) || 80, 200);
+    let from = 0;
+    const names = [];
+    const seen = new Set();
+    let pages = 0;
+
+    while (names.length < desired && pages < 30) {
+      const url = buildChpProductExtendedUrl({ term: q, from });
+      const data = await fetchJson(url);
+
+      const pageNames = extractChpProductNames(data, { limit: desired });
+      for (const n of pageNames) {
+        if (!seen.has(n)) {
+          seen.add(n);
+          names.push(n);
+        }
+        if (names.length >= desired) break;
+      }
+
+      const nextFrom = getChpNextFrom(data);
+      if (nextFrom == null) break;
+      if (nextFrom === from) break;
+      from = nextFrom;
+      pages += 1;
+    }
+
+    if (names.length === 0) {
+      return res.status(200).json({
+        imported: 0,
+        skipped: 0,
+        names: [],
+        warning: 'לא הוחזרו תוצאות מ-CHP או שלא הצלחתי לחלץ שמות מוצרים.'
+      });
+    }
+
+    let imported = 0;
+    let skipped = 0;
+
+    for (const name of names) {
+      const existing = await prisma.product.findFirst({ where: { name } });
+      if (existing) {
+        skipped += 1;
+        continue;
+      }
+      await prisma.product.create({
+        data: {
+          name,
+          quantity: 0,
+          rules: { create: { ruleType: 'everyone' } }
+        }
+      });
+      imported += 1;
+    }
+
+    res.json({ imported, skipped, names, source: 'chp' });
+  } catch (error) {
+    console.error('CHP import failed:', error);
+    res.status(500).json({ error: error.message || 'Import failed' });
+  }
+});
+
+// Import products from Shufersal search page
+// body: { query: string, limit?: number }
+app.post('/api/products/import/shufersal', async (req, res) => {
+  try {
+    if (!requireAdminPassword(req, res)) return;
+    const { query, limit } = req.body || {};
+    const q = String(query || '').trim();
+    if (!q) return res.status(400).json({ error: 'query is required' });
+
+    const url = `https://www.shufersal.co.il/online/he/search?text=${encodeURIComponent(q)}`;
+    const html = await fetchUrlText(url);
+    const names = extractShufersalProductNames(html, { limit: Math.min(parseInt(limit) || 80, 200) });
+
+    if (names.length === 0) {
+      return res.status(200).json({
+        imported: 0,
+        skipped: 0,
+        names: [],
+        warning: 'לא הצלחתי לחלץ שמות מוצרים מהעמוד (יתכן שהאתר שינה מבנה או חוסם בוטים).'
+      });
+    }
+
+    let imported = 0;
+    let skipped = 0;
+
+    for (const name of names) {
+      const existing = await prisma.product.findFirst({ where: { name } });
+      if (existing) {
+        skipped += 1;
+        continue;
+      }
+      await prisma.product.create({
+        data: {
+          name,
+          quantity: 0,
+          rules: { create: { ruleType: 'everyone' } }
+        }
+      });
+      imported += 1;
+    }
+
+    res.json({ imported, skipped, names });
+  } catch (error) {
+    console.error('Shufersal import failed:', error);
+    res.status(500).json({ error: error.message || 'Import failed' });
+  }
+});
+
 app.post('/api/products', async (req, res) => {
   try {
+    if (!requireAddProductPassword(req, res)) return;
     const { name, quantity, unit, ruleType } = req.body;
     const productData = {
       name,
@@ -114,13 +921,25 @@ app.post('/api/products', async (req, res) => {
 
 app.put('/api/products/:id', async (req, res) => {
   try {
+    if (!requireAdminPassword(req, res)) return;
     const { id } = req.params;
     const { name, quantity, unit, ruleType } = req.body;
     
+    await ensureProductAllocationColumns();
+
+    const currentProduct = await prisma.product.findUnique({
+      where: { id: parseInt(id) },
+      select: { id: true, quantity: true }
+    });
+    if (!currentProduct) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
     // Update product
+    const newQtyInt = parseInt(quantity) || 0;
     const updateData = { 
       name, 
-      quantity: parseFloat(quantity) || 0
+      quantity: newQtyInt
     };
     
     // Only include unit if it's not empty, otherwise set to null explicitly
@@ -134,6 +953,15 @@ app.put('/api/products/:id', async (req, res) => {
       where: { id: parseInt(id) },
       data: updateData
     });
+
+    // If quantity increased (restock), rotate who gets the +1 next time
+    if (newQtyInt > (currentProduct.quantity || 0)) {
+      await prisma.$executeRaw`
+        UPDATE products
+        SET extraOffset = COALESCE(extraOffset, 0) + 1
+        WHERE id = ${parseInt(id)}
+      `;
+    }
     
     // Update or create rule
     if (ruleType) {
@@ -166,6 +994,7 @@ app.put('/api/products/:id', async (req, res) => {
 
 app.delete('/api/products/:id', async (req, res) => {
   try {
+    if (!requireAddProductPassword(req, res)) return;
     const { id } = req.params;
     await prisma.product.delete({
       where: { id: parseInt(id) }
@@ -234,6 +1063,24 @@ app.post('/api/transactions', async (req, res) => {
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });
     }
+
+    // Require a deposit before taking a product (transactions only)
+    if (!prisma.deposit) {
+      return res.status(500).json({
+        error: 'Deposit model not found. Please run: npx prisma generate and restart the server'
+      });
+    }
+
+    const existingDeposit = await prisma.deposit.findFirst({
+      where: {
+        productId: parseInt(productId),
+        memberId: parseInt(memberId)
+      }
+    });
+
+    if (!existingDeposit) {
+      return res.status(403).json({ error: 'חובה להפקיד פיקדון לפני שאפשר לקחת מוצר' });
+    }
     
     // Calculate original quantity (current quantity + all transactions for this product)
     const allProductTransactions = await prisma.transaction.findMany({
@@ -259,7 +1106,18 @@ app.post('/api/transactions', async (req, res) => {
       return res.status(400).json({ error: 'No eligible members for this product' });
     }
     
-    const fairShare = Math.floor(originalQuantity / eligibleMembers.length);
+    // Ensure member is eligible under the rule (redundant safety; rule already checked above)
+    if (!eligibleMembers.some(m => m.id === member.id)) {
+      return res.status(403).json({ error: 'המשתמש אינו זכאי לפי חוק החלוקה של המוצר' });
+    }
+    
+    const extraOffset = await getProductExtraOffset(productId);
+    const fairShare = computeEntitlementForMember({
+      originalQuantity,
+      eligibleMembers,
+      memberId: member.id,
+      extraOffset
+    });
     
     // Calculate how much the member has already taken
     const existingTransactions = await prisma.transaction.findMany({
@@ -291,7 +1149,7 @@ app.post('/api/transactions', async (req, res) => {
     
     const totalReceived = existingTransfersIn.reduce((sum, t) => sum + t.quantity, 0);
     
-    // Total available = fair share - taken - transferred + received
+    // Total available = entitlement - taken - transferred + received
     const totalAvailable = fairShare - totalTaken - totalTransferred + totalReceived;
     
     // Check if trying to take more than total available
@@ -384,6 +1242,19 @@ app.post('/api/share-transfers', async (req, res) => {
     if (eligibleMembers.length === 0) {
       return res.status(400).json({ error: 'No eligible members for this product' });
     }
+
+    // Enforce rule eligibility for both members
+    const fromEligible = eligibleMembers.some(m => m.id === fromMember.id);
+    const toEligible = eligibleMembers.some(m => m.id === toMember.id);
+    if (!fromEligible || !toEligible) {
+      if (productRule?.ruleType === 'children_only') {
+        return res.status(400).json({ error: 'מוצר זה מיועד לילדים בלבד — אי אפשר לבקש הקצבה ממבוגרים/עבור מבוגרים' });
+      }
+      if (productRule?.ruleType === 'adults_only') {
+        return res.status(400).json({ error: 'מוצר זה מיועד למבוגרים בלבד — אי אפשר לבקש הקצבה מילדים/עבור ילדים' });
+      }
+      return res.status(400).json({ error: 'המשתמש שנבחר אינו זכאי לפי חוק החלוקה של המוצר' });
+    }
     
     // Calculate original quantity
     const allProductTransactions = await prisma.transaction.findMany({
@@ -392,7 +1263,13 @@ app.post('/api/share-transfers', async (req, res) => {
     const totalTakenFromProduct = allProductTransactions.reduce((sum, t) => sum + t.quantity, 0);
     const originalQuantity = product.quantity + totalTakenFromProduct;
     
-    const fairShare = Math.floor(originalQuantity / eligibleMembers.length);
+    const extraOffset = await getProductExtraOffset(productId);
+    const fairShare = computeEntitlementForMember({
+      originalQuantity,
+      eligibleMembers,
+      memberId: fromMember.id,
+      extraOffset
+    });
     
     // Calculate how much fromMember has already taken
     const existingTransactions = await prisma.transaction.findMany({
@@ -567,7 +1444,13 @@ app.post('/api/share-requests', async (req, res) => {
     const totalTakenFromProduct = allProductTransactions.reduce((sum, t) => sum + t.quantity, 0);
     const originalQuantity = product.quantity + totalTakenFromProduct;
     
-    const fairShare = Math.floor(originalQuantity / eligibleMembers.length);
+    const extraOffset = await getProductExtraOffset(productId);
+    const fairShare = computeEntitlementForMember({
+      originalQuantity,
+      eligibleMembers,
+      memberId: toMember.id,
+      extraOffset
+    });
     
     // Calculate how much toMember has already taken
     const existingTransactions = await prisma.transaction.findMany({
@@ -751,7 +1634,13 @@ app.put('/api/share-requests/:id/approve', async (req, res) => {
     });
     const totalTakenFromProduct = allProductTransactions.reduce((sum, t) => sum + t.quantity, 0);
     const originalQuantity = product.quantity + totalTakenFromProduct;
-    const fairShare = Math.floor(originalQuantity / eligibleMembers.length);
+    const extraOffset = await getProductExtraOffset(request.productId);
+    const fairShare = computeEntitlementForMember({
+      originalQuantity,
+      eligibleMembers,
+      memberId: request.toMemberId,
+      extraOffset
+    });
     
     const existingTransactions = await prisma.transaction.findMany({
       where: {
@@ -947,6 +1836,18 @@ app.post('/api/deposits', async (req, res) => {
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });
     }
+
+    // Deposits are locked: do not allow re-deposit for same product+member
+    const existingDeposit = await prisma.deposit.findFirst({
+      where: {
+        productId: parseInt(productId),
+        memberId: parseInt(memberId)
+      }
+    });
+
+    if (existingDeposit) {
+      return res.status(400).json({ error: 'כבר הפקדת פיקדון למוצר הזה — אי אפשר לשנות את סכום הפיקדון' });
+    }
     
     // Calculate fair share
     const allMembers = await prisma.familyMember.findMany();
@@ -971,7 +1872,13 @@ app.post('/api/deposits', async (req, res) => {
     });
     const totalTakenFromProduct = allProductTransactions.reduce((sum, t) => sum + t.quantity, 0);
     const originalQuantity = product.quantity + totalTakenFromProduct;
-    const fairShare = Math.floor(originalQuantity / eligibleMembers.length);
+    const extraOffset = await getProductExtraOffset(productId);
+    const fairShare = computeEntitlementForMember({
+      originalQuantity,
+      eligibleMembers,
+      memberId: member.id,
+      extraOffset
+    });
     
     // Calculate how much the member has already taken
     const existingTransactions = await prisma.transaction.findMany({
@@ -1083,6 +1990,97 @@ app.get('/api/deposits', async (req, res) => {
   }
 });
 
+// Ensure refund events table exists (no Prisma migration required)
+async function ensureRefundEventsTable() {
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS refund_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        memberId INTEGER NOT NULL,
+        productId INTEGER NOT NULL,
+        createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        shown INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  } catch (e) {
+    console.error('Failed to ensure refund_events table:', e);
+  }
+}
+
+// Get refund notifications for a member (and mark as shown)
+app.get('/api/refund-events', async (req, res) => {
+  try {
+    const { memberId } = req.query;
+    if (!memberId) return res.status(400).json({ error: 'memberId is required' });
+
+    await ensureRefundEventsTable();
+
+    const events = await prisma.$queryRaw`
+      SELECT re.id as id, re.productId as productId, p.name as productName, re.createdAt as createdAt
+      FROM refund_events re
+      JOIN products p ON p.id = re.productId
+      WHERE re.memberId = ${parseInt(memberId)} AND re.shown = 0
+      ORDER BY re.createdAt DESC
+    `;
+
+    // Mark as shown
+    for (const ev of events) {
+      await prisma.$executeRaw`
+        UPDATE refund_events SET shown = 1 WHERE id = ${ev.id}
+      `;
+    }
+
+    res.json(events);
+  } catch (error) {
+    console.error('Error fetching refund events:', error);
+    res.status(500).json({ error: error.message || 'שגיאה בטעינת הודעות החזרת פיקדון' });
+  }
+});
+
+// Refund deposit (admin)
+app.post('/api/deposits/refund', async (req, res) => {
+  try {
+    if (!requireAdminPassword(req, res)) return;
+    if (!prisma.deposit) {
+      return res.status(500).json({
+        error: 'Deposit model not found. Please run: npx prisma generate and restart the server'
+      });
+    }
+
+    const { productId, memberId } = req.body;
+
+    const deposit = await prisma.deposit.findFirst({
+      where: {
+        productId: parseInt(productId),
+        memberId: parseInt(memberId)
+      },
+      include: {
+        product: true,
+        member: true
+      }
+    });
+
+    if (!deposit) {
+      return res.status(404).json({ error: 'פיקדון לא נמצא' });
+    }
+
+    await ensureRefundEventsTable();
+    await prisma.$executeRaw`
+      INSERT INTO refund_events (memberId, productId, shown) VALUES (${deposit.memberId}, ${deposit.productId}, 0)
+    `;
+
+    // No DB schema changes: refund = admin deletes the deposit record
+    await prisma.deposit.delete({
+      where: { id: deposit.id }
+    });
+
+    res.json({ message: 'Deposit refunded', refundedMember: deposit.member, product: deposit.product });
+  } catch (error) {
+    console.error('Error refunding deposit:', error);
+    res.status(500).json({ error: error.message || 'שגיאה בהחזרת הפיקדון' });
+  }
+});
+
 app.delete('/api/deposits/:id', async (req, res) => {
   try {
     // Check if deposit model exists
@@ -1091,14 +2089,9 @@ app.delete('/api/deposits/:id', async (req, res) => {
         error: 'Deposit model not found. Please run: npx prisma generate and restart the server' 
       });
     }
-    
-    const { id } = req.params;
-    
-    await prisma.deposit.delete({
-      where: { id: parseInt(id) }
-    });
-    
-    res.json({ message: 'Deposit deleted successfully' });
+
+    // Deposits are locked: cannot cancel after creation
+    return res.status(403).json({ error: 'לא ניתן לבטל פיקדון לאחר שהופקד' });
   } catch (error) {
     console.error('Error deleting deposit:', error);
     res.status(500).json({ error: error.message });

@@ -15,6 +15,12 @@ model FamilyMember {
   name      String
   isChild   Boolean  @default(false)
   gender    String?  // "male" | "female" | "other" | null
+  // Login / 2FA
+  // clientCode: QR "מזהה לקוח" שמוצג במסך התחברות
+  // totpSecret: secret (base32) ליצירת קודי TOTP באפליקציית Authenticator
+  clientCode String? @unique
+  totpSecret  String?
+  totpEnabled Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
@@ -33,6 +39,9 @@ model Product {
   name        String
   quantity    Int      @default(0)
   unit        String?
+  // Allocation remainder rotation:
+  // When originalQuantity % eligibleCount !== 0, extraOffset rotates who gets the +1
+  extraOffset Int      @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   

@@ -14,6 +14,7 @@ function App() {
             <h1 className="logo">
               <UtensilsCrossed size={24} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
               ניהול אוכל משפחתי
+              <span className="app-version">גרסה 0.1</span>
             </h1>
             <div className="nav-links">
               <Link to="/admin" className="nav-link">

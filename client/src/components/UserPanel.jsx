@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { BrowserCodeReader, BrowserQRCodeReader } from '@zxing/browser';
 import { 
   User, ShoppingCart, Package, Plus, X, Save, Clock, 
   ArrowRightLeft, Send, Check, XCircle, Wallet, CreditCard, 
@@ -18,6 +19,13 @@ function UserPanel() {
   const [shareRequests, setShareRequests] = useState([]);
   const [deposits, setDeposits] = useState([]);
   const [selectedMember, setSelectedMember] = useState(null);
+  const [loginStep, setLoginStep] = useState('choose'); // 'choose' | 'scan' | 'totp'
+  const [loginMember, setLoginMember] = useState(null);
+  const [totpCode, setTotpCode] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const videoRef = useRef(null);
   const [showTransactionModal, setShowTransactionModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showRequestModal, setShowRequestModal] = useState(false);
@@ -35,10 +43,111 @@ function UserPanel() {
     paymentMethod: 'card' // 'card' or 'cash'
   });
   const [loading, setLoading] = useState(true);
+  const [refundToast, setRefundToast] = useState(null); // { message: string, products: string[] }
 
   useEffect(() => {
     fetchData();
   }, [selectedMember]);
+
+  const extractClientCodeFromQrText = (text) => {
+    if (!text) return null;
+    const raw = String(text).trim();
+    if (raw.startsWith('otpauth://')) return null; // This is the Authenticator QR, not login QR
+
+    try {
+      const obj = JSON.parse(raw);
+      const code = obj?.clientCode;
+      if (typeof code === 'string' && code.trim()) return code.trim();
+    } catch {
+      // not JSON
+    }
+
+    // Fallback: allow scanning the UUID itself
+    return raw;
+  };
+
+  useEffect(() => {
+    if (loginStep !== 'scan') return;
+    setScanError('');
+
+    if (!loginMember?.clientCode) return;
+
+    let isActive = true;
+    const reader = new BrowserQRCodeReader();
+    let controls = null;
+
+    const start = async () => {
+      try {
+        const videoEl = videoRef.current;
+        if (!videoEl) return;
+
+        // Prefer a back camera + higher resolution to improve QR decoding
+        const constraints = {
+          audio: false,
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        };
+
+        const onResult = (result, err) => {
+          if (!isActive) return;
+          if (result) {
+            const scannedText = result.getText?.() || String(result);
+            const scannedClientCode = extractClientCodeFromQrText(scannedText);
+            if (!scannedClientCode) return;
+
+            if (String(scannedClientCode) !== String(loginMember.clientCode)) {
+              setScanError('ה־QR שנסרק לא תואם למשתמש שנבחר');
+              return;
+            }
+
+            setScanError('');
+            try {
+              controls?.stop?.();
+            } catch {
+              // ignore
+            }
+            setLoginStep('totp');
+            setAuthError('');
+            setTotpCode('');
+          } else if (err) {
+            // Ignore decode errors (happens constantly while scanning)
+          }
+        };
+
+        try {
+          controls = await reader.decodeFromConstraints(constraints, videoEl, onResult);
+        } catch (e1) {
+          // Fallback: just pick any device
+          const devices = await BrowserCodeReader.listVideoInputDevices();
+          const deviceId = devices?.[0]?.deviceId || undefined;
+          controls = await reader.decodeFromVideoDevice(deviceId, videoEl, onResult);
+        }
+      } catch (e) {
+        console.error('Error starting QR scanner:', e);
+        if (!isActive) return;
+        setScanError('אין גישה למצלמה או שלא נמצאה מצלמה. ודאו שאישרתם הרשאה.');
+      }
+    };
+
+    start();
+
+    return () => {
+      isActive = false;
+      try {
+        controls?.stop?.();
+      } catch {
+        // ignore
+      }
+      try {
+        reader.reset?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, [loginStep, loginMember?.id, loginMember?.clientCode]);
 
   useEffect(() => {
     if (!selectedMember) return;
@@ -78,6 +187,22 @@ function UserPanel() {
       if (selectedMember) {
         setShareRequests(requestsRes.data || []);
         setDeposits(depositsRes.data || []);
+
+        // Fetch refund notifications (one-time) and show toast with confetti
+        try {
+          const refundEventsRes = await axios.get(`${API_URL}/refund-events?memberId=${selectedMember.id}`);
+          const events = refundEventsRes.data || [];
+          if (events.length > 0) {
+            const productNames = [...new Set(events.map(e => e.productName).filter(Boolean))];
+            setRefundToast({
+              message: 'הפיקדון הוחזר בהצלחה',
+              products: productNames
+            });
+            setTimeout(() => setRefundToast(null), 4000);
+          }
+        } catch (e) {
+          // Silent: don't block main UI if notifications fail
+        }
       }
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -91,9 +216,87 @@ function UserPanel() {
     }
   };
 
+  const handleTotpVerify = async (e) => {
+    e.preventDefault();
+    if (!loginMember) return;
+    setAuthLoading(true);
+    setAuthError('');
+    try {
+      const token = String(totpCode || '').replace(/\s/g, '');
+      const res = await axios.post(`${API_URL}/auth/verify`, {
+        memberId: loginMember.id,
+        totp: token
+      });
+      setSelectedMember(res.data.member);
+      setLoginStep('choose');
+      setLoginMember(null);
+      setTotpCode('');
+    } catch (error) {
+      console.error('Error verifying TOTP:', error);
+      setAuthError(error.response?.data?.error || 'שגיאה בהתחברות');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const Confetti = ({ active }) => {
+    if (!active) return null;
+    const pieces = Array.from({ length: 60 }, (_, i) => i);
+    return (
+      <>
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          pointerEvents: 'none',
+          overflow: 'hidden',
+          zIndex: 9999
+        }}>
+          {pieces.map((i) => {
+            const left = Math.random() * 100;
+            const delay = Math.random() * 0.3;
+            const duration = 1.8 + Math.random() * 0.7;
+            const size = 6 + Math.floor(Math.random() * 6);
+            const colors = ['#ff6b35', '#f7c59f', '#4caf50', '#2196f3', '#9c27b0', '#ffd166'];
+            const color = colors[i % colors.length];
+            const rotate = Math.random() * 360;
+            return (
+              <div
+                key={i}
+                style={{
+                  position: 'absolute',
+                  top: '-10px',
+                  left: `${left}%`,
+                  width: `${size}px`,
+                  height: `${size * 1.6}px`,
+                  background: color,
+                  borderRadius: '2px',
+                  transform: `rotate(${rotate}deg)`,
+                  animation: `confettiFall ${duration}s ease-out ${delay}s forwards`,
+                  opacity: 0.95
+                }}
+              />
+            );
+          })}
+        </div>
+        <style>{`
+          @keyframes confettiFall {
+            0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+            100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
+          }
+        `}</style>
+      </>
+    );
+  };
+
   const handleProductClick = (product) => {
     if (!selectedMember) {
       alert('אנא בחרו קודם את שמכם');
+      return;
+    }
+
+    // Require deposit before taking a product
+    if (getTotalDeposits(product.id) <= 0) {
+      alert('חובה להפקיד פיקדון לפני שאפשר לקחת מוצר');
       return;
     }
     
@@ -147,6 +350,42 @@ function UserPanel() {
     return true;
   };
 
+  const isMemberEligibleForProduct = (product, member) => {
+    const rule = product?.rules && product.rules[0];
+    if (!rule || rule.ruleType === 'everyone') return true;
+    if (rule.ruleType === 'children_only') return !!member?.isChild;
+    if (rule.ruleType === 'adults_only') return !member?.isChild;
+    return true;
+  };
+
+  const getEligibleMembersForProduct = (product) => {
+    const rule = product?.rules && product.rules[0];
+    if (!rule || rule.ruleType === 'everyone') return members;
+    if (rule.ruleType === 'children_only') return members.filter(m => m.isChild);
+    if (rule.ruleType === 'adults_only') return members.filter(m => !m.isChild);
+    return members;
+  };
+
+  const getEntitlementForMember = (product, memberId) => {
+    const eligible = getEligibleMembersForProduct(product);
+    const count = eligible.length;
+    if (!count) return 0;
+
+    const originalQuantity = getOriginalQuantity(product);
+    const base = Math.floor(originalQuantity / count);
+    const remainder = ((originalQuantity % count) + count) % count;
+    if (remainder === 0) return base;
+
+    const sorted = [...eligible].sort((a, b) => a.id - b.id);
+    const idx = sorted.findIndex(m => m.id === memberId);
+    if (idx < 0) return 0;
+
+    const offset = ((Number(product?.extraOffset || 0) % count) + count) % count;
+    const relative = (idx - offset + count) % count;
+    const extra = relative < remainder ? 1 : 0;
+    return base + extra;
+  };
+
   // Calculate original quantity (current quantity + all transactions for this product)
   const getOriginalQuantity = (product) => {
     const productTransactions = transactions.filter(t => t.productId === product.id);
@@ -157,29 +396,7 @@ function UserPanel() {
   // Calculate fair share for a product
   const calculateFairShare = (product) => {
     if (!selectedMember) return 0;
-    
-    const originalQuantity = getOriginalQuantity(product);
-    if (originalQuantity <= 0) return 0;
-    
-    const rule = product.rules && product.rules[0];
-    let eligibleMembers = [];
-    
-    if (!rule || rule.ruleType === 'everyone') {
-      // Everyone can take
-      eligibleMembers = members;
-    } else if (rule.ruleType === 'children_only') {
-      // Only children
-      eligibleMembers = members.filter(m => m.isChild);
-    } else if (rule.ruleType === 'adults_only') {
-      // Only adults
-      eligibleMembers = members.filter(m => !m.isChild);
-    }
-    
-    if (eligibleMembers.length === 0) return 0;
-    
-    // Calculate fair share: original quantity divided by number of eligible members
-    const fairShare = originalQuantity / eligibleMembers.length;
-    return Math.floor(fairShare); // Return integer only
+    return getEntitlementForMember(product, selectedMember.id);
   };
 
   // Calculate how much the selected member has already taken from a product
@@ -222,7 +439,7 @@ function UserPanel() {
   // This is what's left from YOUR original allocation (not including what you received)
   // Note: Deposits don't affect allocation - they're just prepayments
   const getRemainingFairShare = (product) => {
-    const fairShare = calculateFairShare(product);
+    const fairShare = selectedMember ? getEntitlementForMember(product, selectedMember.id) : 0;
     const taken = getTakenAmount(product.id);
     const transferred = getTransferredAmount(product.id);
     // Remaining = fair share - taken - transferred (NOT including deposits or received)
@@ -251,6 +468,12 @@ function UserPanel() {
   const handleDepositClick = (product) => {
     if (!selectedMember) {
       alert('אנא בחרו קודם את שמכם');
+      return;
+    }
+
+    // Deposits are locked: prevent re-depositing to avoid changing amount
+    if (getTotalDeposits(product.id) > 0) {
+      alert('כבר הפקדת פיקדון למוצר הזה — לא ניתן לשנות את סכום הפיקדון');
       return;
     }
     
@@ -304,16 +527,7 @@ function UserPanel() {
   };
 
   const handleCancelDeposit = async (depositId) => {
-    if (!window.confirm('האם אתה בטוח שברצונך לבטל את הפיקדון?')) {
-      return;
-    }
-    try {
-      await axios.delete(`${API_URL}/deposits/${depositId}`);
-      fetchData();
-    } catch (error) {
-      console.error('Error cancelling deposit:', error);
-      alert(error.response?.data?.error || 'שגיאה בביטול הפיקדון');
-    }
+    alert('לא ניתן לבטל פיקדון לאחר שהופקד');
   };
 
   const handleTransferClick = (product) => {
@@ -336,6 +550,11 @@ function UserPanel() {
   const handleTransferSubmit = async (e) => {
     e.preventDefault();
     try {
+      const toMember = members.find(m => m.id === parseInt(transferForm.toMemberId));
+      if (toMember && !isMemberEligibleForProduct(selectedProduct, toMember)) {
+        alert('לפי חוק החלוקה של המוצר, אי אפשר להעביר הקצבה למשתמש הזה');
+        return;
+      }
       await axios.post(`${API_URL}/share-transfers`, {
         productId: selectedProduct.id,
         fromMemberId: selectedMember.id,
@@ -365,7 +584,7 @@ function UserPanel() {
 
   // Calculate remaining fair share for a specific member (for checking if they have available share)
   const getMemberRemainingFairShare = (product, memberId) => {
-    const fairShare = calculateFairShare(product);
+    const fairShare = getEntitlementForMember(product, memberId);
     
     const memberTransactions = transactions.filter(
       t => t.memberId === memberId && t.productId === product.id
@@ -395,6 +614,11 @@ function UserPanel() {
   const handleRequestSubmit = async (e) => {
     e.preventDefault();
     try {
+      const toMember = members.find(m => m.id === parseInt(requestForm.toMemberId));
+      if (toMember && !isMemberEligibleForProduct(selectedProduct, toMember)) {
+        alert('לפי חוק החלוקה של המוצר, אי אפשר לבקש הקצבה מהמשתמש הזה');
+        return;
+      }
       await axios.post(`${API_URL}/share-requests`, {
         productId: selectedProduct.id,
         fromMemberId: selectedMember.id,
@@ -475,15 +699,51 @@ function UserPanel() {
 
   return (
     <div className="user-panel">
+      <Confetti active={!!refundToast} />
+      {refundToast && (
+        <div style={{
+          position: 'fixed',
+          top: '1rem',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 10000,
+          background: 'white',
+          border: '2px solid #4CAF50',
+          borderRadius: '14px',
+          padding: '0.9rem 1.2rem',
+          boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+          minWidth: '280px',
+          textAlign: 'center',
+          animation: 'toastPop 0.25s ease-out'
+        }}>
+          <div style={{ fontWeight: 'bold', color: '#2e7d32', fontSize: '1.05rem' }}>
+            {refundToast.message}
+          </div>
+          {refundToast.products?.length > 0 && (
+            <div style={{ marginTop: '0.25rem', color: '#666', fontSize: '0.9rem' }}>
+              עבור: {refundToast.products.join(' ,')}
+            </div>
+          )}
+          <style>{`
+            @keyframes toastPop {
+              from { transform: translateX(-50%) translateY(-10px); opacity: 0; }
+              to { transform: translateX(-50%) translateY(0); opacity: 1; }
+            }
+          `}</style>
+        </div>
+      )}
       <div className="container">
         <h1 className="page-title">
           <User size={28} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
           ממשק משתמש
         </h1>
 
-        {!selectedMember && (
+        {!selectedMember && loginStep === 'choose' && (
           <div className="card member-selector">
-            <h2 className="card-title">בחרו את שמכם:</h2>
+            <h2 className="card-title">התחברות</h2>
+            <div style={{ color: '#666', marginBottom: '0.75rem' }}>
+              בחרו משתמש, סרקו עם המצלמה את ה־QR שהמשתמש מציג, ולאחר מכן הזינו קוד מאפליקציית Authenticator.
+            </div>
             {loading ? (
               <p style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
                 טוען...
@@ -498,7 +758,13 @@ function UserPanel() {
                   <button
                     key={member.id}
                     className="member-card"
-                    onClick={() => setSelectedMember(member)}
+                    onClick={() => {
+                      setLoginMember(member);
+                      setLoginStep('scan');
+                      setAuthError('');
+                      setTotpCode('');
+                      setScanError('');
+                    }}
                   >
                     <div className="member-icon">{member.isChild ? '👶' : '👤'}</div>
                     <div className="member-name">{member.name}</div>
@@ -506,6 +772,111 @@ function UserPanel() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {!selectedMember && loginStep === 'scan' && loginMember && (
+          <div className="card member-selector" style={{ maxWidth: '720px', margin: '0 auto' }}>
+            <h2 className="card-title">סריקת QR כניסה - {loginMember.name}</h2>
+            <div style={{ color: '#666', marginBottom: '1rem' }}>
+              הפעילו מצלמה וסרקו את ה־QR שהמשתמש מציג (מזהה לקוח).
+            </div>
+
+            {!loginMember.clientCode ? (
+              <div style={{ padding: '1rem', borderRadius: '12px', border: '1px solid #ffcdd2', background: '#ffebee', color: '#c62828' }}>
+                למשתמש הזה אין קודי כניסה. פנו לממשק הניהול ולחצו “קודי כניסה”.
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                  <div style={{ width: '100%', maxWidth: '520px' }}>
+                    <video
+                      ref={videoRef}
+                      style={{
+                        width: '100%',
+                        borderRadius: '14px',
+                        border: '1px solid #eee',
+                        background: '#111'
+                      }}
+                      muted
+                      playsInline
+                    />
+                  </div>
+                </div>
+
+                {scanError && (
+                  <div style={{ marginTop: '0.75rem', padding: '0.75rem', borderRadius: '12px', border: '1px solid #ffcdd2', background: '#ffebee', color: '#c62828' }}>
+                    {scanError}
+                  </div>
+                )}
+
+                <div style={{ marginTop: '0.75rem', color: '#666', fontSize: '0.9rem' }}>
+                  טיפ לזיהוי: הגדילו את ה־QR על המסך, העלו בהירות למסך המציג, והרחיקו/קרבו עד שהמצלמה בפוקוס.
+                </div>
+              </>
+            )}
+
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setLoginStep('choose');
+                  setLoginMember(null);
+                  setAuthError('');
+                  setTotpCode('');
+                  setScanError('');
+                }}
+              >
+                חזור
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!selectedMember && loginStep === 'totp' && loginMember && (
+          <div className="card member-selector" style={{ maxWidth: '520px', margin: '0 auto' }}>
+            <h2 className="card-title">הזנת קוד TOTP - {loginMember.name}</h2>
+            <div style={{ color: '#666', marginBottom: '1rem' }}>
+              פתחו את אפליקציית ה־Authenticator והקלידו את הקוד (6 ספרות).
+            </div>
+
+            <form onSubmit={handleTotpVerify}>
+              <div className="form-group">
+                <label>קוד:</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="123456"
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  required
+                />
+              </div>
+
+              {authError && (
+                <div style={{ marginTop: '0.75rem', padding: '0.75rem', borderRadius: '12px', border: '1px solid #ffcdd2', background: '#ffebee', color: '#c62828' }}>
+                  {authError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setLoginStep('scan');
+                    setAuthError('');
+                    setTotpCode('');
+                  }}
+                >
+                  חזור
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={authLoading || totpCode.length !== 6}>
+                  {authLoading ? 'מתחבר...' : 'התחבר'}
+                </button>
+              </div>
+            </form>
           </div>
         )}
 
@@ -519,7 +890,14 @@ function UserPanel() {
                 </h2>
                 <button 
                   className="btn btn-secondary"
-                  onClick={() => setSelectedMember(null)}
+                  onClick={() => {
+                    setSelectedMember(null);
+                    setLoginStep('choose');
+                    setLoginMember(null);
+                    setAuthError('');
+                    setTotpCode('');
+                    setScanError('');
+                  }}
                 >
                   <LogOut size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                   החלף משתמש
@@ -542,6 +920,7 @@ function UserPanel() {
                     const remaining = getRemainingFairShare(product);
                     const totalAvailable = getTotalAvailable(product);
                     const hasRemaining = totalAvailable > 0;
+                    const hasDeposit = getTotalDeposits(product.id) > 0;
                     
                     return (
                       <div
@@ -621,7 +1000,7 @@ function UserPanel() {
                         </div>
                         {isAvailable && canTake && (
                           <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                            {hasRemaining && (
+                            {hasRemaining && hasDeposit && (
                               <button 
                                 className="btn-take"
                                 onClick={(e) => {
@@ -633,6 +1012,12 @@ function UserPanel() {
                                 <ShoppingCart size={16} />
                                 קח מוצר
                               </button>
+                            )}
+                            {hasRemaining && !hasDeposit && (
+                              <div style={{ flex: 1, minWidth: '100px', color: '#9C27B0', fontSize: '0.85rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.6rem', borderRadius: '10px', border: '1px solid rgba(156,39,176,0.35)', background: 'rgba(156,39,176,0.06)' }}>
+                                <Wallet size={16} style={{ marginLeft: '0.5rem' }} />
+                                נדרש פיקדון כדי לקחת
+                              </div>
                             )}
                             {getRemainingFairShare(product) > 0 && (
                               <button 
@@ -858,22 +1243,6 @@ function UserPanel() {
                             )}
                           </div>
                         </div>
-                        <button
-                          className="btn-take"
-                          onClick={() => handleCancelDeposit(deposit.id)}
-                          style={{
-                            background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
-                            border: 'none',
-                            padding: '0.5rem 1rem',
-                            whiteSpace: 'nowrap',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.5rem'
-                          }}
-                        >
-                          <X size={16} />
-                          בטל פיקדון
-                        </button>
                       </div>
                     ))}
                 </div>
@@ -973,25 +1342,7 @@ function UserPanel() {
                                 )}
                               </div>
                             </div>
-                            {isMyDeposit && (
-                              <button
-                                className="btn-take"
-                                onClick={() => handleCancelDeposit(item.id)}
-                                style={{
-                                  background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
-                                  border: 'none',
-                                  padding: '0.5rem 1rem',
-                                  whiteSpace: 'nowrap',
-                                  marginLeft: '1rem',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '0.5rem'
-                                }}
-                              >
-                                <X size={16} />
-                                בטל
-                              </button>
-                            )}
+                            {isMyDeposit && null}
                           </div>
                         );
                       } else {
@@ -1179,7 +1530,7 @@ function UserPanel() {
                   >
                     <option value="">בחר משתמש</option>
                     {members
-                      .filter(m => m.id !== selectedMember.id)
+                      .filter(m => m.id !== selectedMember.id && isMemberEligibleForProduct(selectedProduct, m))
                       .map(member => (
                         <option key={member.id} value={member.id}>
                           {member.name} {member.isChild ? '(ילד)' : '(מבוגר)'}
@@ -1283,6 +1634,7 @@ function UserPanel() {
                     {members
                       .filter(m => {
                         if (m.id === selectedMember.id) return false;
+                        if (!isMemberEligibleForProduct(selectedProduct, m)) return false;
                         const remaining = getMemberRemainingFairShare(selectedProduct, m.id);
                         return remaining > 0;
                       })
@@ -1297,6 +1649,7 @@ function UserPanel() {
                     {members
                       .filter(m => {
                         if (m.id === selectedMember.id) return false;
+                        if (!isMemberEligibleForProduct(selectedProduct, m)) return false;
                         const remaining = getMemberRemainingFairShare(selectedProduct, m.id);
                         return remaining <= 0;
                       })
@@ -1310,6 +1663,20 @@ function UserPanel() {
                 {requestForm.toMemberId && (() => {
                   const selectedToMember = members.find(m => m.id === parseInt(requestForm.toMemberId));
                   if (selectedToMember) {
+                    if (!isMemberEligibleForProduct(selectedProduct, selectedToMember)) {
+                      return (
+                        <div style={{ 
+                          padding: '0.75rem', 
+                          background: '#fff3e0', 
+                          color: '#e65100', 
+                          borderRadius: '8px',
+                          marginTop: '0.5rem',
+                          border: '1px solid #ffb74d'
+                        }}>
+                          ⚠️ לפי חוק החלוקה של המוצר אי אפשר לבקש הקצבה מהמשתמש הזה
+                        </div>
+                      );
+                    }
                     const remaining = getMemberRemainingFairShare(selectedProduct, selectedToMember.id);
                     if (remaining <= 0) {
                       return (
@@ -1346,6 +1713,7 @@ function UserPanel() {
                     disabled={requestForm.toMemberId && (() => {
                       const selectedToMember = members.find(m => m.id === parseInt(requestForm.toMemberId));
                       if (selectedToMember) {
+                        if (!isMemberEligibleForProduct(selectedProduct, selectedToMember)) return true;
                         const remaining = getMemberRemainingFairShare(selectedProduct, selectedToMember.id);
                         return remaining <= 0;
                       }
