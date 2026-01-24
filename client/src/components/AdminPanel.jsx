@@ -38,7 +38,8 @@ function AdminPanel() {
     name: '', 
     quantity: '', 
     unit: '', 
-    ruleType: 'everyone' 
+    ruleType: 'everyone',
+    specificMemberIds: []
   });
   const [importingChp, setImportingChp] = useState(false);
   const pendingMemberPasswordRef = useRef('');
@@ -53,6 +54,16 @@ function AdminPanel() {
   const promptAdminPassword = (actionLabel) => {
     const pw = window.prompt(`סיסמת אדמין נדרשת עבור: ${actionLabel}`, '');
     if (!pw) return null;
+    return pw;
+  };
+
+  const promptAddMemberPassword = () => {
+    const pw = window.prompt('סיסמה להוספת בן משפחה:', '');
+    if (!pw) return null;
+    if (pw !== '2014') {
+      alert('סיסמה שגויה.');
+      return null;
+    }
     return pw;
   };
 
@@ -253,7 +264,7 @@ function AdminPanel() {
         await axios.put(`${API_URL}/family-members/${editingMember.id}`, memberForm, passwordHeaders(pw));
         pendingMemberPasswordRef.current = '';
       } else {
-        const pw = pendingAdminPasswordRef.current || promptAdminPassword('הוספת משתמש');
+        const pw = pendingAdminPasswordRef.current || promptAddMemberPassword();
         if (!pw) return;
         const res = await axios.post(`${API_URL}/family-members`, memberForm, passwordHeaders(pw));
         pendingAdminPasswordRef.current = '';
@@ -271,7 +282,7 @@ function AdminPanel() {
       fetchData();
     } catch (error) {
       console.error('Error saving member:', error);
-      alert('שגיאה בשמירת הנתונים');
+      alert(error.response?.data?.error || 'שגיאה בשמירת הנתונים');
     }
   };
 
@@ -282,6 +293,14 @@ function AdminPanel() {
         pendingAdminPasswordRef.current ||
         (editingProduct ? promptAdminPassword('עריכת מוצר') : promptAddProductPassword());
       if (!pw) return;
+
+      if (productForm.ruleType === 'specific_members') {
+        const ids = Array.isArray(productForm.specificMemberIds) ? productForm.specificMemberIds : [];
+        if (ids.length === 0) {
+          alert('בחר לפחות בן משפחה אחד לחוק "רשימה נבחרת".');
+          return;
+        }
+      }
       if (editingProduct) {
         await axios.put(`${API_URL}/products/${editingProduct.id}`, productForm, passwordHeaders(pw));
       } else {
@@ -295,7 +314,7 @@ function AdminPanel() {
       pendingAdminPasswordRef.current = '';
       setShowProductModal(false);
       setEditingProduct(null);
-      setProductForm({ name: '', quantity: '', unit: '', ruleType: 'everyone' });
+      setProductForm({ name: '', quantity: '', unit: '', ruleType: 'everyone', specificMemberIds: [] });
       fetchData();
     } catch (error) {
       console.error('Error saving product:', error);
@@ -440,7 +459,8 @@ function AdminPanel() {
       name: product.name,
       quantity: product.quantity,
       unit: product.unit,
-      ruleType: rule ? rule.ruleType : 'everyone'
+      ruleType: rule ? rule.ruleType : 'everyone',
+      specificMemberIds: Array.isArray(rule?.specificMemberIds) ? rule.specificMemberIds : []
     });
     setShowProductModal(true);
   };
@@ -449,7 +469,8 @@ function AdminPanel() {
     const rules = {
       'everyone': 'כולם',
       'children_only': 'ילדים בלבד',
-      'adults_only': 'מבוגרים בלבד'
+      'adults_only': 'מבוגרים בלבד',
+      'specific_members': 'רשימה נבחרת'
     };
     return rules[ruleType] || ruleType;
   };
@@ -484,7 +505,7 @@ function AdminPanel() {
               <button 
                 className="btn btn-primary"
                 onClick={() => {
-                  const pw = promptAdminPassword('הוספת משתמש');
+                  const pw = promptAddMemberPassword();
                   if (!pw) return;
                   pendingAdminPasswordRef.current = pw;
                   setEditingMember(null);
@@ -589,7 +610,7 @@ function AdminPanel() {
                   if (!pw) return;
                   pendingAdminPasswordRef.current = pw;
                   setEditingProduct(null);
-                  setProductForm({ name: '', quantity: '', unit: '', ruleType: 'everyone' });
+                  setProductForm({ name: '', quantity: '', unit: '', ruleType: 'everyone', specificMemberIds: [] });
                   setShowProductModal(true);
                 }}
               >
@@ -678,11 +699,17 @@ function AdminPanel() {
               </div>
 
               <div style={{ marginBottom: '1rem', color: '#666' }}>
-                חוק: <strong>{allocationReport.ruleType}</strong> •
+                חוק: <strong>{getRuleLabel(allocationReport.ruleType)}</strong> •
                 כמות מקורית: <strong>{allocationReport.originalQuantity}</strong> •
                 בסיס: <strong>{allocationReport.base}</strong> •
                 שארית: <strong>{allocationReport.remainder}</strong>
               </div>
+
+              {allocationReport.ruleType === 'specific_members' && (allocationReport.eligibleMembers || []).length > 0 && (
+                <div style={{ marginBottom: '1rem', color: '#666' }}>
+                  משתתפים בחלוקה: <strong>{allocationReport.eligibleMembers.map((m) => m.name).join(' ,')}</strong>
+                </div>
+              )}
 
               <table className="table">
                 <thead>
@@ -866,14 +893,75 @@ function AdminPanel() {
                   <label>חוק חלוקה:</label>
                   <select
                     value={productForm.ruleType}
-                    onChange={(e) => setProductForm({ ...productForm, ruleType: e.target.value })}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setProductForm((prev) => ({
+                        ...prev,
+                        ruleType: next,
+                        specificMemberIds: next === 'specific_members' ? (prev.specificMemberIds || []) : []
+                      }));
+                    }}
                     required
                   >
                     <option value="everyone">כולם</option>
                     <option value="children_only">ילדים בלבד</option>
                     <option value="adults_only">מבוגרים בלבד</option>
+                    <option value="specific_members">רשימה נבחרת</option>
                   </select>
                 </div>
+
+                {productForm.ruleType === 'specific_members' && (
+                  <div className="form-group">
+                    <label>מי משתתף בחלוקה?</label>
+                    <div style={{ border: '1px solid #eee', borderRadius: '12px', padding: '0.75rem', maxHeight: '220px', overflowY: 'auto' }}>
+                      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                        <button
+                          type="button"
+                          className="btn-small btn-secondary"
+                          onClick={() => setProductForm((prev) => ({ ...prev, specificMemberIds: members.map((m) => m.id) }))}
+                        >
+                          בחר הכל
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-small btn-secondary"
+                          onClick={() => setProductForm((prev) => ({ ...prev, specificMemberIds: [] }))}
+                        >
+                          נקה הכל
+                        </button>
+                      </div>
+                      {members.length === 0 ? (
+                        <div style={{ color: '#999' }}>אין בני משפחה במערכת</div>
+                      ) : (
+                        members.map((m) => {
+                          const checked = (productForm.specificMemberIds || []).includes(m.id);
+                          return (
+                            <label key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0' }}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  const on = e.target.checked;
+                                  setProductForm((prev) => {
+                                    const cur = Array.isArray(prev.specificMemberIds) ? prev.specificMemberIds : [];
+                                    const set = new Set(cur);
+                                    if (on) set.add(m.id);
+                                    else set.delete(m.id);
+                                    return { ...prev, specificMemberIds: Array.from(set) };
+                                  });
+                                }}
+                              />
+                              <span>{m.name} {m.isChild ? '(ילד)' : '(מבוגר)'}</span>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                    <small style={{ color: '#666', display: 'block', marginTop: '0.25rem' }}>
+                      בחוק זה, ההקצבה מתחלקת שווה רק בין המשתמשים שסימנת.
+                    </small>
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
                   <button type="button" className="btn btn-secondary" onClick={() => setShowProductModal(false)}>
                     <X size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />

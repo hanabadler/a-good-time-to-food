@@ -335,7 +335,8 @@ function UserPanel() {
     const rules = {
       'everyone': 'כולם',
       'children_only': 'ילדים בלבד',
-      'adults_only': 'מבוגרים בלבד'
+      'adults_only': 'מבוגרים בלבד',
+      'specific_members': 'רשימה נבחרת'
     };
     return rules[ruleType] || ruleType;
   };
@@ -353,6 +354,10 @@ function UserPanel() {
   const isMemberEligibleForProduct = (product, member) => {
     const rule = product?.rules && product.rules[0];
     if (!rule || rule.ruleType === 'everyone') return true;
+    if (rule.ruleType === 'specific_members') {
+      const ids = Array.isArray(rule.specificMemberIds) ? rule.specificMemberIds : [];
+      return ids.includes(member?.id);
+    }
     if (rule.ruleType === 'children_only') return !!member?.isChild;
     if (rule.ruleType === 'adults_only') return !member?.isChild;
     return true;
@@ -361,6 +366,11 @@ function UserPanel() {
   const getEligibleMembersForProduct = (product) => {
     const rule = product?.rules && product.rules[0];
     if (!rule || rule.ruleType === 'everyone') return members;
+    if (rule.ruleType === 'specific_members') {
+      const ids = Array.isArray(rule.specificMemberIds) ? rule.specificMemberIds : [];
+      const set = new Set(ids);
+      return members.filter((m) => set.has(m.id));
+    }
     if (rule.ruleType === 'children_only') return members.filter(m => m.isChild);
     if (rule.ruleType === 'adults_only') return members.filter(m => !m.isChild);
     return members;

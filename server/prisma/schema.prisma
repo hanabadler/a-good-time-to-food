@@ -30,6 +30,7 @@ model FamilyMember {
   requestsFrom ShareRequest[] @relation("RequestsFrom")
   requestsTo   ShareRequest[] @relation("RequestsTo")
   deposits Deposit[]
+  productRuleMemberships ProductRuleMember[]
   
   @@map("family_members")
 }
@@ -59,11 +60,26 @@ model ProductRule {
   productId Int
   ruleType  String   // "everyone" | "children_only" | "adults_only" | "specific_members"
   product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  members   ProductRuleMember[]
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
   @@map("product_rules")
+}
+
+// Members explicitly included in a specific_members product rule.
+// Backed by the `product_rule_members` table (created at runtime if missing).
+model ProductRuleMember {
+  productRuleId Int
+  memberId      Int
+  createdAt     DateTime @default(now())
+
+  rule   ProductRule  @relation(fields: [productRuleId], references: [id], onDelete: Cascade)
+  member FamilyMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@id([productRuleId, memberId])
+  @@map("product_rule_members")
 }
 
 model Transaction {

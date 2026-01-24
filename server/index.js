@@ -47,6 +47,17 @@ function requireAddProductPassword(req, res) {
   return true;
 }
 
+function requireAddMemberPassword(req, res) {
+  // "Add family member" password must be ONLY 2014 (not configurable)
+  const expected = '2014';
+  const provided = getAdminPasswordFromRequest(req);
+  if (!provided || provided !== expected) {
+    res.status(401).json({ error: 'סיסמה שגויה' });
+    return false;
+  }
+  return true;
+}
+
 // Per-member passwords (PINs). Stored as hash+salt in DB.
 const DEFAULT_MEMBER_PINS_BY_NAME = {
   'אלעד': '2007',
@@ -71,6 +82,89 @@ async function ensureProductAllocationColumns() {
   } catch (e) {
     console.error('Failed to ensure products extraOffset column:', e);
   }
+}
+
+// Specific members per product rule (ruleType === 'specific_members')
+async function ensureProductRuleMembersTable() {
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS product_rule_members (
+        productRuleId INTEGER NOT NULL,
+        memberId INTEGER NOT NULL,
+        createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (productRuleId, memberId)
+      );
+    `);
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS idx_product_rule_members_rule ON product_rule_members(productRuleId);`
+    ).catch(() => {});
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS idx_product_rule_members_member ON product_rule_members(memberId);`
+    ).catch(() => {});
+  } catch (e) {
+    console.error('Failed to ensure product_rule_members table:', e);
+  }
+}
+
+function normalizeMemberIds(input) {
+  const arr = Array.isArray(input) ? input : [];
+  const uniq = [];
+  const seen = new Set();
+  for (const v of arr) {
+    const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+    if (!Number.isFinite(n)) continue;
+    const id = parseInt(n);
+    if (!Number.isFinite(id)) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    uniq.push(id);
+  }
+  return uniq;
+}
+
+async function getSpecificMemberIdsForRule(ruleId) {
+  await ensureProductRuleMembersTable();
+  if (!ruleId) return [];
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT memberId FROM product_rule_members WHERE productRuleId = ${parseInt(ruleId)}
+    `;
+    return (rows || []).map((r) => Number(r.memberId)).filter((n) => Number.isFinite(n));
+  } catch {
+    return [];
+  }
+}
+
+async function setSpecificMemberIdsForRule(ruleId, memberIds) {
+  await ensureProductRuleMembersTable();
+  const rid = parseInt(ruleId);
+  if (!Number.isFinite(rid)) return;
+  const ids = normalizeMemberIds(memberIds);
+  try {
+    // Replace list atomically-ish: delete then insert
+    await prisma.$executeRaw`
+      DELETE FROM product_rule_members WHERE productRuleId = ${rid}
+    `;
+    for (const mid of ids) {
+      await prisma.$executeRaw`
+        INSERT OR IGNORE INTO product_rule_members (productRuleId, memberId) VALUES (${rid}, ${mid})
+      `;
+    }
+  } catch (e) {
+    console.error('Failed to set specific members for rule:', e);
+  }
+}
+
+async function getEligibleMembersForProductRule(rule, allMembers) {
+  if (!rule || !rule.ruleType || rule.ruleType === 'everyone') return allMembers;
+  if (rule.ruleType === 'children_only') return allMembers.filter((m) => m.isChild);
+  if (rule.ruleType === 'adults_only') return allMembers.filter((m) => !m.isChild);
+  if (rule.ruleType === 'specific_members') {
+    const ids = await getSpecificMemberIdsForRule(rule.id);
+    const set = new Set(ids);
+    return allMembers.filter((m) => set.has(m.id));
+  }
+  return allMembers;
 }
 
 async function getProductsExtraOffsetsMap() {
@@ -455,7 +549,7 @@ app.get('/api/family-members', async (req, res) => {
 
 app.post('/api/family-members', async (req, res) => {
   try {
-    if (!requireAdminPassword(req, res)) return;
+    if (!requireAddMemberPassword(req, res)) return;
     const { name, isChild, gender } = req.body;
     await ensureFamilyMemberAuthColumns();
     await ensureDefaultPinsForKnownMembers();
@@ -655,12 +749,60 @@ app.get('/api/products', async (req, res) => {
       orderBy: { createdAt: 'desc' }
     });
     const offsets = await getProductsExtraOffsetsMap();
-    res.json(
-      (products || []).map((p) => ({
+
+    // Attach specific member ids for ruleType === 'specific_members'
+    await ensureProductRuleMembersTable();
+    const ruleIds = [];
+    for (const p of products || []) {
+      const r = p?.rules?.[0];
+      if (r?.id) ruleIds.push(r.id);
+    }
+    const ruleToMembers = new Map(); // ruleId -> number[]
+    if (ruleIds.length > 0) {
+      try {
+        const safeIds = ruleIds
+          .map((x) => (typeof x === 'number' ? x : parseInt(String(x), 10)))
+          .filter((n) => Number.isFinite(n))
+          .map((n) => parseInt(n));
+
+        if (safeIds.length > 0) {
+          const rows = await prisma.$queryRawUnsafe(
+            `SELECT productRuleId, memberId FROM product_rule_members WHERE productRuleId IN (${safeIds.join(',')})`
+          );
+          for (const row of rows || []) {
+            const rid = Number(row.productRuleId);
+            const mid = Number(row.memberId);
+            if (!Number.isFinite(rid) || !Number.isFinite(mid)) continue;
+            if (!ruleToMembers.has(rid)) ruleToMembers.set(rid, []);
+            ruleToMembers.get(rid).push(mid);
+          }
+        }
+      } catch {
+        // If Prisma.join isn't available (older client), fall back to per-rule query later
+      }
+    }
+
+    const payload = [];
+    for (const p of products || []) {
+      const rule = p?.rules?.[0];
+      let rules = p?.rules || [];
+      if (rule?.id && rule?.ruleType === 'specific_members') {
+        const ids = ruleToMembers.get(rule.id) || (await getSpecificMemberIdsForRule(rule.id));
+        rules = [
+          {
+            ...rule,
+            specificMemberIds: ids
+          }
+        ];
+      }
+      payload.push({
         ...p,
+        rules,
         extraOffset: offsets.get(p.id) ?? 0
-      }))
-    );
+      });
+    }
+
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -671,6 +813,7 @@ app.get('/api/products/:id/allocation-report', async (req, res) => {
   try {
     if (!requireAdminPassword(req, res)) return;
     await ensureProductAllocationColumns();
+    await ensureProductRuleMembersTable();
 
     const { id } = req.params;
     const productId = parseInt(id);
@@ -683,11 +826,7 @@ app.get('/api/products/:id/allocation-report', async (req, res) => {
 
     const allMembers = await prisma.familyMember.findMany();
     const rule = product.rules?.[0];
-    let eligibleMembers = [];
-    if (!rule || rule.ruleType === 'everyone') eligibleMembers = allMembers;
-    else if (rule.ruleType === 'children_only') eligibleMembers = allMembers.filter((m) => m.isChild);
-    else if (rule.ruleType === 'adults_only') eligibleMembers = allMembers.filter((m) => !m.isChild);
-    else eligibleMembers = allMembers;
+    let eligibleMembers = await getEligibleMembersForProductRule(rule, allMembers);
 
     const allProductTransactions = await prisma.transaction.findMany({
       where: { productId },
@@ -740,6 +879,8 @@ app.get('/api/products/:id/allocation-report', async (req, res) => {
     res.json({
       product: { id: product.id, name: product.name, unit: product.unit, quantity: product.quantity },
       ruleType: rule?.ruleType || 'everyone',
+      specificMemberIds: rule?.ruleType === 'specific_members' ? await getSpecificMemberIdsForRule(rule.id) : [],
+      eligibleMembers: sortedEligible.map((m) => ({ id: m.id, name: m.name, isChild: !!m.isChild })),
       originalQuantity,
       base,
       remainder,
@@ -891,7 +1032,7 @@ app.post('/api/products/import/shufersal', async (req, res) => {
 app.post('/api/products', async (req, res) => {
   try {
     if (!requireAddProductPassword(req, res)) return;
-    const { name, quantity, unit, ruleType } = req.body;
+    const { name, quantity, unit, ruleType, specificMemberIds } = req.body;
     const productData = {
       name,
         quantity: parseInt(quantity) || 0,
@@ -913,6 +1054,19 @@ app.post('/api/products', async (req, res) => {
         rules: true
       }
     });
+
+    // Save specific members list if needed
+    const rule = product?.rules?.[0];
+    if (rule?.ruleType === 'specific_members') {
+      const ids = normalizeMemberIds(specificMemberIds);
+      if (ids.length === 0) {
+        // Keep product, but rule has no members => nobody eligible
+      } else {
+        await setSpecificMemberIdsForRule(rule.id, ids);
+      }
+      // Attach for response
+      product.rules = [{ ...rule, specificMemberIds: ids }];
+    }
     res.json(product);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -923,9 +1077,10 @@ app.put('/api/products/:id', async (req, res) => {
   try {
     if (!requireAdminPassword(req, res)) return;
     const { id } = req.params;
-    const { name, quantity, unit, ruleType } = req.body;
+    const { name, quantity, unit, ruleType, specificMemberIds } = req.body;
     
     await ensureProductAllocationColumns();
+    await ensureProductRuleMembersTable();
 
     const currentProduct = await prisma.product.findUnique({
       where: { id: parseInt(id) },
@@ -974,10 +1129,21 @@ app.put('/api/products/:id', async (req, res) => {
           where: { id: existingRule.id },
           data: { ruleType }
         });
+        if (ruleType === 'specific_members') {
+          await setSpecificMemberIdsForRule(existingRule.id, specificMemberIds);
+        } else {
+          // Clear any previous specific list
+          await prisma.$executeRaw`
+            DELETE FROM product_rule_members WHERE productRuleId = ${existingRule.id}
+          `;
+        }
       } else {
-        await prisma.productRule.create({
+        const newRule = await prisma.productRule.create({
           data: { productId: parseInt(id), ruleType }
         });
+        if (ruleType === 'specific_members') {
+          await setSpecificMemberIdsForRule(newRule.id, specificMemberIds);
+        }
       }
     }
     
@@ -985,6 +1151,12 @@ app.put('/api/products/:id', async (req, res) => {
       where: { id: parseInt(id) },
       include: { rules: true }
     });
+
+    // Attach specific list for response
+    if (updatedProduct?.rules?.[0]?.ruleType === 'specific_members') {
+      const r = updatedProduct.rules[0];
+      updatedProduct.rules = [{ ...r, specificMemberIds: await getSpecificMemberIdsForRule(r.id) }];
+    }
     
     res.json(updatedProduct);
   } catch (error) {
@@ -1035,20 +1207,7 @@ app.post('/api/transactions', async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
     
-    // Check rule
     const rule = product.rules[0];
-    if (rule) {
-      const member = await prisma.familyMember.findUnique({
-        where: { id: parseInt(memberId) }
-      });
-      
-      if (rule.ruleType === 'children_only' && !member.isChild) {
-        return res.status(403).json({ error: 'This product is only for children' });
-      }
-      if (rule.ruleType === 'adults_only' && member.isChild) {
-        return res.status(403).json({ error: 'This product is only for adults' });
-      }
-    }
     
     // Check quantity
     if (product.quantity < quantity) {
@@ -1091,16 +1250,7 @@ app.post('/api/transactions', async (req, res) => {
     
     // Calculate fair share
     const allMembers = await prisma.familyMember.findMany();
-    const productRule = product.rules[0];
-    let eligibleMembers = [];
-    
-    if (!productRule || productRule.ruleType === 'everyone') {
-      eligibleMembers = allMembers;
-    } else if (productRule.ruleType === 'children_only') {
-      eligibleMembers = allMembers.filter(m => m.isChild);
-    } else if (productRule.ruleType === 'adults_only') {
-      eligibleMembers = allMembers.filter(m => !m.isChild);
-    }
+    const eligibleMembers = await getEligibleMembersForProductRule(rule, allMembers);
     
     if (eligibleMembers.length === 0) {
       return res.status(400).json({ error: 'No eligible members for this product' });
@@ -1229,15 +1379,7 @@ app.post('/api/share-transfers', async (req, res) => {
     // Calculate fair share for fromMember
     const allMembers = await prisma.familyMember.findMany();
     const productRule = product.rules[0];
-    let eligibleMembers = [];
-    
-    if (!productRule || productRule.ruleType === 'everyone') {
-      eligibleMembers = allMembers;
-    } else if (productRule.ruleType === 'children_only') {
-      eligibleMembers = allMembers.filter(m => m.isChild);
-    } else if (productRule.ruleType === 'adults_only') {
-      eligibleMembers = allMembers.filter(m => !m.isChild);
-    }
+    const eligibleMembers = await getEligibleMembersForProductRule(productRule, allMembers);
     
     if (eligibleMembers.length === 0) {
       return res.status(400).json({ error: 'No eligible members for this product' });
@@ -1423,15 +1565,7 @@ app.post('/api/share-requests', async (req, res) => {
     // Check if toMember has available share
     const allMembers = await prisma.familyMember.findMany();
     const productRule = product.rules[0];
-    let eligibleMembers = [];
-    
-    if (!productRule || productRule.ruleType === 'everyone') {
-      eligibleMembers = allMembers;
-    } else if (productRule.ruleType === 'children_only') {
-      eligibleMembers = allMembers.filter(m => m.isChild);
-    } else if (productRule.ruleType === 'adults_only') {
-      eligibleMembers = allMembers.filter(m => !m.isChild);
-    }
+    const eligibleMembers = await getEligibleMembersForProductRule(productRule, allMembers);
     
     if (eligibleMembers.length === 0) {
       return res.status(400).json({ error: 'No eligible members for this product' });
@@ -1619,15 +1753,7 @@ app.put('/api/share-requests/:id/approve', async (req, res) => {
     });
     
     const productRule = product.rules[0];
-    let eligibleMembers = [];
-    
-    if (!productRule || productRule.ruleType === 'everyone') {
-      eligibleMembers = allMembers;
-    } else if (productRule.ruleType === 'children_only') {
-      eligibleMembers = allMembers.filter(m => m.isChild);
-    } else if (productRule.ruleType === 'adults_only') {
-      eligibleMembers = allMembers.filter(m => !m.isChild);
-    }
+    const eligibleMembers = await getEligibleMembersForProductRule(productRule, allMembers);
     
     const allProductTransactions = await prisma.transaction.findMany({
       where: { productId: request.productId }
@@ -1852,15 +1978,7 @@ app.post('/api/deposits', async (req, res) => {
     // Calculate fair share
     const allMembers = await prisma.familyMember.findMany();
     const productRule = product.rules[0];
-    let eligibleMembers = [];
-    
-    if (!productRule || productRule.ruleType === 'everyone') {
-      eligibleMembers = allMembers;
-    } else if (productRule.ruleType === 'children_only') {
-      eligibleMembers = allMembers.filter(m => m.isChild);
-    } else if (productRule.ruleType === 'adults_only') {
-      eligibleMembers = allMembers.filter(m => !m.isChild);
-    }
+    const eligibleMembers = await getEligibleMembersForProductRule(productRule, allMembers);
     
     if (eligibleMembers.length === 0) {
       return res.status(400).json({ error: 'No eligible members for this product' });
