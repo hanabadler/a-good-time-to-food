@@ -1,5 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { 
+  User, ShoppingCart, Package, Plus, X, Save, Clock, 
+  ArrowRightLeft, Send, Check, XCircle, Wallet, CreditCard, 
+  DollarSign, LogOut, Bell, Inbox, FileText, AlertCircle,
+  UserCircle, RefreshCw, Trash2, Edit
+} from 'lucide-react';
 import './UserPanel.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
@@ -470,7 +476,10 @@ function UserPanel() {
   return (
     <div className="user-panel">
       <div className="container">
-        <h1 className="page-title">ממשק משתמש</h1>
+        <h1 className="page-title">
+          <User size={28} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+          ממשק משתמש
+        </h1>
 
         {!selectedMember && (
           <div className="card member-selector">
@@ -504,11 +513,15 @@ function UserPanel() {
           <>
             <div className="card welcome-card">
               <div className="welcome-content">
-                <h2>שלום {selectedMember.name}! 👋</h2>
+                <h2>
+                  <UserCircle size={24} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                  שלום {selectedMember.name}!
+                </h2>
                 <button 
                   className="btn btn-secondary"
                   onClick={() => setSelectedMember(null)}
                 >
+                  <LogOut size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                   החלף משתמש
                 </button>
               </div>
@@ -615,8 +628,9 @@ function UserPanel() {
                                   e.stopPropagation();
                                   handleProductClick(product);
                                 }}
-                                style={{ flex: 1, minWidth: '100px' }}
+                                style={{ flex: 1, minWidth: '100px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
                               >
+                                <ShoppingCart size={16} />
                                 קח מוצר
                               </button>
                             )}
@@ -631,9 +645,14 @@ function UserPanel() {
                                   flex: 1,
                                   minWidth: '100px',
                                   background: 'linear-gradient(135deg, #ff9800 0%, #f57c00 100%)',
-                                  border: 'none'
+                                  border: 'none',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '0.5rem'
                                 }}
                               >
+                                <ArrowRightLeft size={16} />
                                 העבר הקצבה
                               </button>
                             )}
@@ -647,9 +666,14 @@ function UserPanel() {
                                 flex: 1,
                                 minWidth: '100px',
                                 background: 'linear-gradient(135deg, #2196F3 0%, #1976D2 100%)',
-                                border: 'none'
+                                border: 'none',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '0.5rem'
                               }}
                             >
+                              <Send size={16} />
                               בקש הקצבה
                             </button>
                             <button 
@@ -662,10 +686,15 @@ function UserPanel() {
                                 flex: 1,
                                 minWidth: '100px',
                                 background: 'linear-gradient(135deg, #9C27B0 0%, #7B1FA2 100%)',
-                                border: 'none'
+                                border: 'none',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '0.5rem'
                               }}
                             >
-                              💰 הפקד פיקדון
+                              <Wallet size={16} />
+                              הפקד פיקדון
                             </button>
                           </div>
                         )}
@@ -700,7 +729,8 @@ function UserPanel() {
                         <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
                           {request.fromMember.name} מבקש {request.quantity}{request.product.unit ? ` ${request.product.unit}` : ''} של {request.product.name}
                         </div>
-                        <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                        <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <Clock size={14} />
                           {formatDate(request.createdAt)}
                         </div>
                       </div>
@@ -711,9 +741,13 @@ function UserPanel() {
                           style={{
                             background: 'linear-gradient(135deg, #4CAF50 0%, #45a049 100%)',
                             border: 'none',
-                            padding: '0.5rem 1rem'
+                            padding: '0.5rem 1rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem'
                           }}
                         >
+                          <Check size={16} />
                           אישר
                         </button>
                         <button
@@ -722,9 +756,13 @@ function UserPanel() {
                           style={{
                             background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
                             border: 'none',
-                            padding: '0.5rem 1rem'
+                            padding: '0.5rem 1rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem'
                           }}
                         >
+                          <XCircle size={16} />
                           דחה
                         </button>
                       </div>
@@ -736,7 +774,10 @@ function UserPanel() {
 
             {getMyPendingRequests().length > 0 && (
               <div className="card" style={{ background: 'linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%)', border: '2px solid #2196F3' }}>
-                <h2 className="card-title">📬 הבקשות שלי</h2>
+                <h2 className="card-title">
+                  <Inbox size={22} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                  הבקשות שלי
+                </h2>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
                   {getMyPendingRequests().map(request => (
                     <div key={request.id} style={{
@@ -752,7 +793,8 @@ function UserPanel() {
                         <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
                           ביקשת {request.quantity}{request.product.unit ? ` ${request.product.unit}` : ''} של {request.product.name} מ-{request.toMember.name}
                         </div>
-                        <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                        <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <Clock size={14} />
                           {formatDate(request.createdAt)} • ממתין לאישור
                         </div>
                       </div>
@@ -763,9 +805,13 @@ function UserPanel() {
                           background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
                           border: 'none',
                           padding: '0.5rem 1rem',
-                          whiteSpace: 'nowrap'
+                          whiteSpace: 'nowrap',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem'
                         }}
                       >
+                        <X size={16} />
                         בטל בקשה
                       </button>
                     </div>
@@ -776,7 +822,10 @@ function UserPanel() {
 
             {deposits.filter(d => d.memberId === selectedMember?.id).length > 0 && (
               <div className="card" style={{ background: 'linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%)', border: '2px solid #9C27B0' }}>
-                <h2 className="card-title">💰 הפיקדונות שלי</h2>
+                <h2 className="card-title">
+                  <Wallet size={22} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                  הפיקדונות שלי
+                </h2>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
                   {deposits
                     .filter(d => d.memberId === selectedMember.id)
@@ -794,8 +843,19 @@ function UserPanel() {
                           <div style={{ fontWeight: 'bold', fontSize: '1.1rem' }}>
                             פיקדון: {deposit.amount} ₪ עבור {deposit.product.name}
                           </div>
-                          <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
-                            {formatDate(deposit.createdAt)} • {deposit.paymentMethod === 'cash' ? '💵 מזומן' : '💳 כרטיס אשראי'}
+                          <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <Clock size={14} />
+                            {formatDate(deposit.createdAt)} • {deposit.paymentMethod === 'cash' ? (
+                              <>
+                                <DollarSign size={14} />
+                                מזומן
+                              </>
+                            ) : (
+                              <>
+                                <CreditCard size={14} />
+                                כרטיס אשראי
+                              </>
+                            )}
                           </div>
                         </div>
                         <button
@@ -805,9 +865,13 @@ function UserPanel() {
                             background: 'linear-gradient(135deg, #f44336 0%, #da190b 100%)',
                             border: 'none',
                             padding: '0.5rem 1rem',
-                            whiteSpace: 'nowrap'
+                            whiteSpace: 'nowrap',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem'
                           }}
                         >
+                          <X size={16} />
                           בטל פיקדון
                         </button>
                       </div>
@@ -817,7 +881,10 @@ function UserPanel() {
             )}
 
             <div className="card">
-              <h2 className="card-title">📝 לוג פעילות</h2>
+              <h2 className="card-title">
+                <FileText size={22} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                לוג פעילות
+              </h2>
               {transactions.length === 0 && shareTransfers.length === 0 && deposits.length === 0 ? (
                 <p style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
                   אין פעילות עדיין
@@ -860,9 +927,13 @@ function UserPanel() {
                                   border: 'none',
                                   padding: '0.5rem 1rem',
                                   whiteSpace: 'nowrap',
-                                  marginLeft: '1rem'
+                                  marginLeft: '1rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.5rem'
                                 }}
                               >
+                                <X size={16} />
                                 בטל
                               </button>
                             )}
@@ -880,15 +951,26 @@ function UserPanel() {
                           }}>
                             <div style={{ flex: 1 }}>
                               <div className="log-item-header">
-                                <span className="log-item-name">
-                                  💰 {item.member.name} הפקיד פיקדון עבור {item.product.name}
+                                <span className="log-item-name" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  <Wallet size={16} />
+                                  {item.member.name} הפקיד פיקדון עבור {item.product.name}
                                 </span>
                                 <span className="log-item-time">
                                   {formatDate(item.createdAt)}
                                 </span>
                               </div>
-                              <div className="log-item-details">
-                                סכום: {item.amount} ₪ • {item.paymentMethod === 'cash' ? '💵 מזומן' : '💳 כרטיס אשראי'}
+                              <div className="log-item-details" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                סכום: {item.amount} ₪ • {item.paymentMethod === 'cash' ? (
+                                  <>
+                                    <DollarSign size={14} />
+                                    מזומן
+                                  </>
+                                ) : (
+                                  <>
+                                    <CreditCard size={14} />
+                                    כרטיס אשראי
+                                  </>
+                                )}
                               </div>
                             </div>
                             {isMyDeposit && (
@@ -900,9 +982,13 @@ function UserPanel() {
                                   border: 'none',
                                   padding: '0.5rem 1rem',
                                   whiteSpace: 'nowrap',
-                                  marginLeft: '1rem'
+                                  marginLeft: '1rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '0.5rem'
                                 }}
                               >
+                                <X size={16} />
                                 בטל
                               </button>
                             )}
@@ -915,8 +1001,9 @@ function UserPanel() {
                             background: 'linear-gradient(90deg, rgba(255, 152, 0, 0.1) 0%, transparent 100%)'
                           }}>
                             <div className="log-item-header">
-                              <span className="log-item-name">
-                                🔄 {item.fromMember.name} העביר ל-{item.toMember.name} - {item.product.name}
+                              <span className="log-item-name" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <ArrowRightLeft size={16} />
+                                {item.fromMember.name} העביר ל-{item.toMember.name} - {item.product.name}
                               </span>
                               <span className="log-item-time">
                                 {formatDate(item.createdAt)}
@@ -939,8 +1026,13 @@ function UserPanel() {
           <div className="modal" onClick={() => setShowTransactionModal(false)}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
-                <h2>קח {selectedProduct.name}</h2>
-                <button className="close-btn" onClick={() => setShowTransactionModal(false)}>×</button>
+                <h2>
+                  <ShoppingCart size={22} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                  קח {selectedProduct.name}
+                </h2>
+                <button className="close-btn" onClick={() => setShowTransactionModal(false)}>
+                  <X size={24} />
+                </button>
               </div>
               <form onSubmit={handleTransactionSubmit}>
                 <div className="form-group">
@@ -1007,9 +1099,11 @@ function UserPanel() {
                 </div>
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
                   <button type="button" className="btn btn-secondary" onClick={() => setShowTransactionModal(false)}>
+                    <X size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                     ביטול
                   </button>
                   <button type="submit" className="btn btn-primary">
+                    <Check size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                     אישור
                   </button>
                 </div>
@@ -1031,8 +1125,9 @@ function UserPanel() {
                 borderRadius: '20px 20px 0 0',
                 borderBottom: '2px solid rgba(255, 255, 255, 0.2)'
               }}>
-                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold' }}>
-                  🔄 העברת הקצבה - {selectedProduct.name}
+                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <ArrowRightLeft size={24} />
+                  העברת הקצבה - {selectedProduct.name}
                 </h2>
                 <button className="close-btn" onClick={() => setShowTransferModal(false)} style={{
                   color: 'white',
@@ -1047,7 +1142,9 @@ function UserPanel() {
                   border: 'none',
                   cursor: 'pointer',
                   transition: 'all 0.3s ease'
-                }}>×</button>
+                }}>
+                  <X size={20} />
+                </button>
               </div>
               <form onSubmit={handleTransferSubmit} style={{ padding: '1.5rem', background: 'white' }}>
                 <div className="form-group">
@@ -1134,8 +1231,9 @@ function UserPanel() {
                 borderRadius: '20px 20px 0 0',
                 borderBottom: '2px solid rgba(255, 255, 255, 0.2)'
               }}>
-                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold' }}>
-                  📬 בקשת הקצבה - {selectedProduct.name}
+                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Send size={24} />
+                  בקשת הקצבה - {selectedProduct.name}
                 </h2>
                 <button className="close-btn" onClick={() => setShowRequestModal(false)} style={{
                   color: 'white',
@@ -1150,7 +1248,9 @@ function UserPanel() {
                   border: 'none',
                   cursor: 'pointer',
                   transition: 'all 0.3s ease'
-                }}>×</button>
+                }}>
+                  <X size={20} />
+                </button>
               </div>
               <form onSubmit={handleRequestSubmit} style={{ padding: '1.5rem', background: 'white' }}>
                 <div className="form-group">
@@ -1230,6 +1330,7 @@ function UserPanel() {
                 })()}
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
                   <button type="button" className="btn btn-secondary" onClick={() => setShowRequestModal(false)}>
+                    <X size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                     ביטול
                   </button>
                   <button 
@@ -1237,7 +1338,10 @@ function UserPanel() {
                     className="btn btn-primary" 
                     style={{
                       background: 'linear-gradient(135deg, #2196F3 0%, #1976D2 100%)',
-                      border: 'none'
+                      border: 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem'
                     }}
                     disabled={requestForm.toMemberId && (() => {
                       const selectedToMember = members.find(m => m.id === parseInt(requestForm.toMemberId));
@@ -1248,6 +1352,7 @@ function UserPanel() {
                       return false;
                     })()}
                   >
+                    <Send size={18} />
                     שלח בקשה
                   </button>
                 </div>
@@ -1271,8 +1376,9 @@ function UserPanel() {
                 borderRadius: '20px 20px 0 0',
                 borderBottom: '2px solid rgba(255, 255, 255, 0.2)'
               }}>
-                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold' }}>
-                  💳 הפקדת פיקדון - {selectedProduct.name}
+                <h2 style={{ color: 'white', margin: 0, fontSize: '1.5rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Wallet size={24} />
+                  הפקדת פיקדון - {selectedProduct.name}
                 </h2>
                 <button className="close-btn" onClick={() => setShowDepositModal(false)} style={{
                   color: 'white',
@@ -1287,7 +1393,9 @@ function UserPanel() {
                   border: 'none',
                   cursor: 'pointer',
                   transition: 'all 0.3s ease'
-                }}>×</button>
+                }}>
+                  <X size={20} />
+                </button>
               </div>
               <form onSubmit={handleDepositSubmit} style={{ padding: '1.5rem', background: 'white' }}>
                 <div className="form-group">
@@ -1336,7 +1444,8 @@ function UserPanel() {
                         onChange={(e) => setDepositForm({ ...depositForm, paymentMethod: e.target.value })}
                         style={{ marginLeft: '0.5rem' }}
                       />
-                      💳 כרטיס אשראי
+                      <CreditCard size={18} style={{ marginLeft: '0.5rem' }} />
+                      כרטיס אשראי
                     </label>
                     <label style={{ 
                       flex: 1, 
@@ -1355,7 +1464,8 @@ function UserPanel() {
                         onChange={(e) => setDepositForm({ ...depositForm, paymentMethod: e.target.value })}
                         style={{ marginLeft: '0.5rem' }}
                       />
-                      💵 מזומן
+                      <DollarSign size={18} style={{ marginLeft: '0.5rem' }} />
+                      מזומן
                     </label>
                   </div>
                 </div>
@@ -1368,7 +1478,10 @@ function UserPanel() {
                   marginTop: '1.5rem',
                   border: '2px solid #9C27B0'
                 }}>
-                  <h3 style={{ margin: '0 0 1rem 0', color: '#333', fontSize: '1.2rem' }}>💳 פרטי כרטיס אשראי</h3>
+                  <h3 style={{ margin: '0 0 1rem 0', color: '#333', fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <CreditCard size={20} />
+                    פרטי כרטיס אשראי
+                  </h3>
                   
                   <div className="form-group">
                     <label>מספר כרטיס אשראי:</label>
@@ -1453,7 +1566,7 @@ function UserPanel() {
                     border: '2px solid #4CAF50',
                     textAlign: 'center'
                   }}>
-                    <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>💵</div>
+                    <DollarSign size={48} style={{ marginBottom: '0.5rem', color: '#4CAF50' }} />
                     <h3 style={{ margin: '0 0 0.5rem 0', color: '#333', fontSize: '1.2rem' }}>תשלום במזומן</h3>
                     <p style={{ margin: 0, color: '#666', fontSize: '0.9rem' }}>
                       הסכום יגבה ממך במזומן בעת איסוף המוצר
@@ -1463,15 +1576,29 @@ function UserPanel() {
                 
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '1.5rem' }}>
                   <button type="button" className="btn btn-secondary" onClick={() => setShowDepositModal(false)}>
+                    <X size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                     ביטול
                   </button>
                   <button type="submit" className="btn btn-primary" style={{
                     background: depositForm.paymentMethod === 'cash' 
                       ? 'linear-gradient(135deg, #4CAF50 0%, #45a049 100%)'
                       : 'linear-gradient(135deg, #9C27B0 0%, #7B1FA2 100%)',
-                    border: 'none'
+                    border: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem'
                   }}>
-                    {depositForm.paymentMethod === 'cash' ? '💵 שלח פיקדון במזומן' : '💳 שלח תשלום'}
+                    {depositForm.paymentMethod === 'cash' ? (
+                      <>
+                        <DollarSign size={18} />
+                        שלח פיקדון במזומן
+                      </>
+                    ) : (
+                      <>
+                        <CreditCard size={18} />
+                        שלח תשלום
+                      </>
+                    )}
                   </button>
                 </div>
               </form>

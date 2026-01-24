@@ -1,5 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { 
+  Users, Package, Plus, Edit, Trash2, History, X, Save, 
+  UserPlus, PackagePlus, Calendar, Clock, ArrowRightLeft, 
+  FileText, AlertCircle
+} from 'lucide-react';
 import './AdminPanel.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
@@ -187,7 +192,10 @@ function AdminPanel() {
         {activeTab === 'members' && (
           <div className="card">
             <div className="card-header">
-              <h2 className="card-title">ניהול בני משפחה</h2>
+              <h2 className="card-title">
+                <Users size={22} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                ניהול בני משפחה
+              </h2>
               <button 
                 className="btn btn-primary"
                 onClick={() => {
@@ -196,7 +204,8 @@ function AdminPanel() {
                   setShowMemberModal(true);
                 }}
               >
-                + הוסף חבר משפחה
+                <UserPlus size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                הוסף חבר משפחה
               </button>
             </div>
             
@@ -252,7 +261,10 @@ function AdminPanel() {
         {activeTab === 'products' && (
           <div className="card">
             <div className="card-header">
-              <h2 className="card-title">ניהול מוצרים</h2>
+              <h2 className="card-title">
+                <Package size={22} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                ניהול מוצרים
+              </h2>
               <button 
                 className="btn btn-primary"
                 onClick={() => {
@@ -261,7 +273,8 @@ function AdminPanel() {
                   setShowProductModal(true);
                 }}
               >
-                + הוסף מוצר
+                <PackagePlus size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                הוסף מוצר
               </button>
             </div>
             
@@ -293,6 +306,7 @@ function AdminPanel() {
                           className="btn-small btn-info"
                           onClick={() => handleEditProduct(product)}
                         >
+                          <Edit size={14} style={{ marginLeft: '0.25rem', verticalAlign: 'middle' }} />
                           ערוך
                         </button>
                         <button 
@@ -300,6 +314,7 @@ function AdminPanel() {
                           onClick={() => handleDeleteProduct(product.id)}
                           style={{ marginRight: '0.5rem' }}
                         >
+                          <Trash2 size={14} style={{ marginLeft: '0.25rem', verticalAlign: 'middle' }} />
                           מחק
                         </button>
                         <button 
@@ -307,6 +322,7 @@ function AdminPanel() {
                           onClick={() => handleShowHistory(product)}
                           style={{ backgroundColor: '#6c757d', borderColor: '#6c757d', color: '#fff' }}
                         >
+                          <History size={14} style={{ marginLeft: '0.25rem', verticalAlign: 'middle' }} />
                           הצג היסטוריה
                         </button>
                       </td>
@@ -405,9 +421,11 @@ function AdminPanel() {
                 </div>
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
                   <button type="button" className="btn btn-secondary" onClick={() => setShowMemberModal(false)}>
+                    <X size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                     ביטול
                   </button>
                   <button type="submit" className="btn btn-primary">
+                    <Save size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                     שמור
                   </button>
                 </div>
@@ -420,8 +438,22 @@ function AdminPanel() {
           <div className="modal" onClick={() => setShowProductModal(false)}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
-                <h2>{editingProduct ? 'ערוך מוצר' : 'הוסף מוצר'}</h2>
-                <button className="close-btn" onClick={() => setShowProductModal(false)}>×</button>
+                <h2>
+                  {editingProduct ? (
+                    <>
+                      <Edit size={22} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                      ערוך מוצר
+                    </>
+                  ) : (
+                    <>
+                      <PackagePlus size={22} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
+                      הוסף מוצר
+                    </>
+                  )}
+                </h2>
+                <button className="close-btn" onClick={() => setShowProductModal(false)}>
+                  <X size={24} />
+                </button>
               </div>
               <form onSubmit={handleProductSubmit}>
                 <div className="form-group">
@@ -458,9 +490,11 @@ function AdminPanel() {
                 </div>
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end' }}>
                   <button type="button" className="btn btn-secondary" onClick={() => setShowProductModal(false)}>
+                    <X size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                     ביטול
                   </button>
                   <button type="submit" className="btn btn-primary">
+                    <Save size={18} style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }} />
                     שמור
                   </button>
                 </div>
@@ -498,7 +532,8 @@ function AdminPanel() {
                   alignItems: 'center',
                   gap: '0.5rem'
                 }}>
-                  📊 היסטוריית לקיחות - {selectedProductHistory.name}
+                  <History size={24} />
+                  היסטוריית לקיחות - {selectedProductHistory.name}
                 </h2>
                 <button 
                   className="close-btn" 
@@ -525,7 +560,9 @@ function AdminPanel() {
                     e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
                     e.currentTarget.style.transform = 'rotate(0deg) scale(1)';
                   }}
-                >×</button>
+                >
+                  <X size={20} />
+                </button>
               </div>
               <div style={{ padding: '1.5rem', background: 'white', minHeight: '300px' }}>
                 {productTransactions.length === 0 ? (
@@ -534,7 +571,7 @@ function AdminPanel() {
                     padding: '3rem',
                     color: '#999'
                   }}>
-                    <div style={{ fontSize: '4rem', marginBottom: '1rem' }}>📭</div>
+                    <AlertCircle size={48} style={{ marginBottom: '1rem', opacity: 0.5 }} />
                     <p style={{ fontSize: '1.2rem', margin: 0 }}>
                       אין היסטוריית לקיחות למוצר זה
                     </p>
@@ -597,7 +634,8 @@ function AdminPanel() {
                                     alignItems: 'center',
                                     gap: '0.5rem'
                                   }}>
-                                    🕐 {formatDate(item.createdAt)}
+                                    <Clock size={14} />
+                                    {formatDate(item.createdAt)}
                                   </div>
                                 </div>
                               </div>
@@ -613,7 +651,7 @@ function AdminPanel() {
                                 {item.quantity}{selectedProductHistory.unit ? ` ${selectedProductHistory.unit}` : ''}
                               </div>
                             </div>
-                            {item.notes && (
+                                  {item.notes && (
                               <div style={{
                                 marginTop: '0.75rem',
                                 padding: '0.75rem',
@@ -621,9 +659,13 @@ function AdminPanel() {
                                 borderRadius: '10px',
                                 fontSize: '0.9rem',
                                 color: '#555',
-                                borderRight: '4px solid #667eea'
+                                borderRight: '4px solid #667eea',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem'
                               }}>
-                                💬 {item.notes}
+                                <FileText size={14} />
+                                {item.notes}
                               </div>
                             )}
                           </div>
@@ -683,7 +725,8 @@ function AdminPanel() {
                                     alignItems: 'center',
                                     gap: '0.5rem'
                                   }}>
-                                    🕐 {formatDate(item.createdAt)}
+                                    <Clock size={14} />
+                                    {formatDate(item.createdAt)}
                                   </div>
                                 </div>
                               </div>
@@ -728,7 +771,10 @@ function AdminPanel() {
                     fontWeight: 'bold',
                     cursor: 'pointer',
                     transition: 'all 0.3s ease',
-                    boxShadow: '0 4px 15px rgba(0, 0, 0, 0.2)'
+                    boxShadow: '0 4px 15px rgba(0, 0, 0, 0.2)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.transform = 'translateY(-2px)';
@@ -739,6 +785,7 @@ function AdminPanel() {
                     e.currentTarget.style.boxShadow = '0 4px 15px rgba(0, 0, 0, 0.2)';
                   }}
                 >
+                  <X size={18} />
                   סגור
                 </button>
               </div>
