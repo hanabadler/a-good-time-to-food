@@ -19,11 +19,12 @@ services:
     networks:
       - tomer-app-network
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/family-members', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
-      interval: 30s
+      # Consume response (r.resume()) and handle connection errors so the check never hangs
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/api/family-members', (r) => { r.resume(); process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"]
+      interval: 15s
       timeout: 10s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 45s
 
   client:
     build:
