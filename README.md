@@ -1,20 +1,20 @@
 # אפליקציית ניהול אוכל משפחתי 🍽️
 
-אפליקציה לניהול חלוקת אוכל בין בני משפחה.
+אפליקציה לניהול חלוקת אוכל בין בני משפחה: הקצבה הוגנת, העברות ובקשות הקצבה, פיקדונות, והתחברות עם QR + TOTP.
 
 ## תכונות
 
-- **ממשק ניהול**: רישום בני משפחה, עדכון מלאי מוצרים, והגדרת חוקי חלוקה
-- **ממשק משתמש**: הצגת מלאי, דיווח על לקיחת מוצרים, ולוג פעילות משותף
-- **חוקי חלוקה**: הגדרת מוצרים לכל המשפחה, רק לילדים, או רק למבוגרים
+- **ממשק ניהול** (`/admin`): רישום בני משפחה, עדכון מלאי מוצרים, חוקי חלוקה (כולם / ילדים / מבוגרים / רשימה נבחרת), דוח חלוקה, היסטוריה ופיקדונות. פעולות רגישות דורשות סיסמת אדמין או סיסמה per-משתמש.
+- **ממשק משתמש** (`/user`): התחברות בשני שלבים — סריקת QR (מזהה לקוח) ואז קוד TOTP מאפליקציית Authenticator. צפייה במלאי, לקיחת מוצרים, העברת/בקשת הקצבה, פיקדונות, ולוג פעילות. תצוגת בחירת משתמש: GRID או רשימה (נשמר ב-localStorage).
+- **חוקי חלוקה**: כולם, רק ילדים, רק מבוגרים, או **רשימה נבחרת** (בחירת משתתפים ידנית למוצר). חלוקה הוגנת עם סיבוב שארית (extraOffset).
 
 ## טכנולוגיות
 
-- **Backend**: Node.js + Express + Prisma
-- **Frontend**: React + Vite
+- **Backend**: Node.js, Express, Prisma, SQLite (פורט 3001)
+- **Frontend**: React, Vite, React Router, Axios (פורט 8081)
 - **Database**: SQLite
 
-## התקנה והפעלה
+## התקנה והפעלה (ללא Docker)
 
 ### 1. התקנת תלויות
 
@@ -30,87 +30,67 @@ npm run prisma:generate
 npm run prisma:migrate
 ```
 
-### 3. הפעלת השרת
-
-בטרמינל נפרד:
+### 3. הפעלת השרת והלקוח
 
 ```bash
-cd server
-npm run dev
+# שרת (פורט 3001)
+cd server && npm run dev
+
+# לקוח (פורט 8081) — בטרמינל נפרד
+cd client && npm run dev
 ```
 
-השרת יפעל על פורט 3001.
-
-### 4. הפעלת הלקוח
-
-בטרמינל נפרד:
-
-```bash
-cd client
-npm run dev
-```
-
-האפליקציה תיפתח ב-http://localhost:8081
-
-### או הפעלה משולבת:
+או הפעלה משולבת מהשורש:
 
 ```bash
 npm run dev
 ```
 
-## שימוש
-
-1. **ממשק ניהול** (`/admin`):
-   - הוספת בני משפחה (ילדים/מבוגרים)
-   - הוספת מוצרים למלאי
-   - הגדרת חוקי חלוקה לכל מוצר
-
-2. **ממשק משתמש** (`/user`):
-   - בחירת שם המשתמש
-   - צפייה במלאי הזמין
-   - דיווח על לקיחת מוצרים
-   - צפייה בלוג הפעילות
+האפליקציה: http://localhost:8081
 
 ## פריסה עם Docker
 
-### Production
+מומלץ להשתמש ב-**Docker Compose V2** (`docker compose` עם רווח):
 
 ```bash
-# בנייה והרצה
-docker-compose up -d --build
-
-# האפליקציה תהיה זמינה ב: http://localhost
+docker compose up -d --build
 ```
 
-### Development (עם hot-reload)
+האפליקציה תהיה זמינה ב: **http://localhost** (לקוח על פורט 80, שרת על 3001).
+
+פיתוח עם hot-reload:
 
 ```bash
-docker-compose -f docker-compose.dev.yml up --build
+docker compose -f docker-compose.dev.yml up --build
 ```
 
-לפרטים נוספים, ראה [DOCKER.md](./DOCKER.md)
+לפתרון בעיות (למשל Prisma/OpenSSL, healthcheck, ContainerConfig), ראה [DOCKER.md](./DOCKER.md).
+
+## שימוש קצר
+
+- **ממשק ניהול**: הוספת בני משפחה (סיסמה 2014), עריכה/מחיקה/קודי כניסה (סיסמה per-משתמש). הוספת/עריכת/מחיקת מוצרים (סיסמאות לפי פעולה). דוח חלוקה, היסטוריה, פיקדונות והחזרת פיקדון.
+- **ממשק משתמש**: בחירת משתמש → סריקת QR מזהה לקוח → הזנת קוד TOTP. לאחר התחברות: צפייה במלאי, קח מוצר, העבר/בקש הקצבה, הפקד פיקדון.
 
 ## מבנה הפרויקט
 
 ```
-tomerApp/
-├── server/          # Backend API
-│   ├── prisma/      # Prisma schema
-│   ├── Dockerfile   # Production Docker image
-│   ├── Dockerfile.dev # Development Docker image
-│   └── index.js     # Express server
-├── client/          # React frontend (Vite)
-│   ├── index.html   # HTML entry point
-│   ├── vite.config.js
-│   ├── Dockerfile   # Production Docker image
-│   ├── Dockerfile.dev # Development Docker image
-│   ├── nginx.conf   # Nginx config for production
-│   └── src/
-│       ├── components/
-│       │   ├── AdminPanel.jsx
-│       │   └── UserPanel.jsx
-│       └── App.jsx
-├── docker-compose.yml      # Production compose
-├── docker-compose.dev.yml  # Development compose
+├── server/              # Backend (Express + Prisma)
+│   ├── prisma/          # Schema, migrations
+│   ├── Dockerfile       # Production (node:18-bullseye-slim)
+│   └── index.js
+├── client/               # Frontend (React + Vite)
+│   ├── src/
+│   │   ├── components/  # AdminPanel.jsx, UserPanel.jsx
+│   │   └── App.jsx
+│   ├── Dockerfile       # Multi-stage: Node build → nginx
+│   └── nginx.conf
+├── docker-compose.yml    # Production
+├── docker-compose.dev.yml
+├── DOCKER.md             # מדריך Docker ופתרון בעיות
+├── cursor.rules          # כללי פרויקט ל-Cursor
 └── package.json
 ```
+
+## קישורים
+
+- [DOCKER.md](./DOCKER.md) — פריסה עם Docker, פקודות שימושיות, ופתרון בעיות.

@@ -15,26 +15,27 @@
 ## תכונות עיקריות
 
 ### 1. ניהול בני משפחה
-- הוספה/עריכה/מחיקה של בני משפחה
-- בחירת סוג: מבוגר/ילד (radio buttons)
-- בחירת מגדר: זכר/נקבה/אחר/לא הוגדר (radio buttons)
-- תצוגה בטבלה עם כל הפרטים
+- הוספת בן משפחה: דורש סיסמה **2014** בלבד (לא סיסמת אדמין כללית). שגיאה: "סיסמה שגויה" בלי לחשוף את הסיסמה.
+- עריכה/מחיקה/הצג קודים/איפוס קודים: דורש **סיסמה per-משתמש** (PIN מאוחסן כ-hash+salt). אימות דרך `POST /api/family-members/:id/verify-password`.
+- בחירת סוג: מבוגר/ילד; מגדר: זכר/נקבה/אחר/לא הוגדר
+- קודי כניסה: QR מזהה לקוח (clientCode) + QR TOTP (Authenticator). יצירה ב-POST family-members; הצגה/איפוס דרך credentials endpoints (עם סיסמת משתמש).
 
 ### 2. ניהול מוצרים
-- הוספה/עריכה/מחיקה של מוצרים
-- שדה כמות (מספרים שלמים בלבד)
-- שדה יחידה (אופציונלי)
+- הוספה/עריכה/מחיקה של מוצרים (סיסמה 2014 להוספה ולמחיקה; סיסמת אדמין לעריכה)
+- שדה כמות (מספרים שלמים בלבד), שדה יחידה (אופציונלי)
 - הגדרת חוקי חלוקה:
   - `everyone` - כולם
   - `children_only` - רק ילדים
   - `adults_only` - רק מבוגרים
-- כפתור "הצג היסטוריה" - מודל עם היסטוריית לקיחות מפורטת
+  - `specific_members` - רשימה נבחרת (בחירת משתתפים ידנית במודל)
+- כפתור "הצג היסטוריה", "פיקדונות", "דוח חלוקה" (דורש סיסמת אדמין)
 
 ### 3. מערכת הקצבה הוגנת (Fair Share)
 - חישוב אוטומטי של החלק היחסי לכל משתמש
 - החישוב מבוסס על **הכמות המקורית** (כמות נוכחית + כל הלקיחות הקודמות)
-- כל משתמש מקבל: `Math.floor(originalQuantity / eligibleMembersCount)`
-- המערכת מונעת לקיחת יותר מההקצבה
+- בסיס: `base = Math.floor(originalQuantity / eligibleCount)`; שארית מתחלקת לפי סיבוב (`extraOffset` ב-Product)
+- `computeEntitlementForMember({ originalQuantity, eligibleMembers, memberId, extraOffset })` בשרת; לוגיקה מקבילה ב-UserPanel (`getEntitlementForMember`)
+- הזכאים נקבעים לפי ProductRule: everyone / children_only / adults_only / specific_members (טבלת product_rule_members)
 - תצוגה: "זמין לך: X", "כבר לקחת: Y", "העברת: Z", "קיבלת: W"
 
 ### 4. העברת הקצבה (Share Transfer)
@@ -63,14 +64,20 @@
   - **מזומן**: רק רישום הסכום (יגבה במזומן בעת איסוף)
 - תצוגה: "💰 הפקדת: X ₪" בכרטיסי המוצרים
 - רשימת פיקדונות נפרדת
-- אפשרות לביטול פיקדון
+- פיקדון נעול: לא ניתן לבטל או לשנות אחרי יצירה. החזרה רק דרך אדמין (POST /api/deposits/refund); המשתמש מקבל הודעה (refund_events).
 
 ### 7. ביטול פעולות
 - ביטול לקיחת מוצר (מחזיר את הכמות למלאי)
 - ביטול בקשה ממתינה
-- ביטול פיקדון
+- פיקדון: לא ניתן לביטול; החזרה רק על ידי אדמין
 
-### 8. לוג פעילות
+### 8. התחברות (ממשק משתמש)
+- שלב 1: בחירת משתמש מהרשימה (תצוגה: GRID או רשימה; הבחירה נשמרת ב-localStorage כ־loginMembersView).
+- שלב 2: סריקת QR מזהה לקוח (clientCode) מהמסך שהמשתמש מציג — מצלמה עם @zxing/browser.
+- שלב 3: הזנת קוד TOTP (6 ספרות) מאפליקציית Authenticator. אימות דרך POST /api/auth/verify.
+- קודי כניסה: נוצרים ביצירת משתמש או ב-"קודי כניסה" / "איפוס קודים" בממשק הניהול (עם סיסמת משתמש).
+
+### 9. לוג פעילות
 - תצוגה משולבת של:
   - לקיחות מוצרים (transactions)
   - העברות הקצבה (share transfers) - בצבע כתום
@@ -97,14 +104,16 @@
 
 ### FamilyMember
 - `id`, `name`, `isChild`, `gender`, `createdAt`, `updatedAt`
-- Relations: transactions, transfersFrom, transfersTo, requestsFrom, requestsTo, deposits
+- Auth: `clientCode` (UUID, for QR login), `totpSecret`, `totpEnabled`; `pinSalt`, `pinHash` (per-member PIN, hashed)
+- Relations: transactions, transfersFrom, transfersTo, requestsFrom, requestsTo, deposits, productRuleMemberships
 
 ### Product
-- `id`, `name`, `quantity` (Int), `unit` (String?, optional), `createdAt`, `updatedAt`
+- `id`, `name`, `quantity` (Int), `unit` (String?, optional), `extraOffset` (Int, for remainder rotation), `createdAt`, `updatedAt`
 - Relations: rules, transactions, shareTransfers, shareRequests, deposits
 
 ### ProductRule
-- `id`, `productId`, `ruleType` ("everyone" | "children_only" | "adults_only"), `createdAt`, `updatedAt`
+- `id`, `productId`, `ruleType` ("everyone" | "children_only" | "adults_only" | "specific_members"), `createdAt`, `updatedAt`
+- For `specific_members`: table `product_rule_members` (productRuleId, memberId) stores which members are eligible
 
 ### Transaction
 - `id`, `productId`, `memberId`, `quantity` (Int), `notes`, `createdAt`
@@ -180,7 +189,20 @@
 ### Deposits
 - `GET /api/deposits` - רשימת פיקדונות
 - `POST /api/deposits` - יצירת פיקדון
-- `DELETE /api/deposits/:id` - ביטול פיקדון
+- `POST /api/deposits/refund` - החזרת פיקדון (אדמין, סיסמת אדמין). יוצר רשומה ב-refund_events ו-marks for notification.
+- `GET /api/refund-events?memberId=` - אירועי החזרת פיקדון למשתמש (מסומן כ-shown אחרי שליפה)
+
+### Auth
+- `POST /api/auth/verify` - אימות TOTP (body: memberId או clientCode, totp). מחזיר member מנוקה.
+
+### Family Members (הרשאות)
+- `POST /api/family-members` - הוספה: סיסמה **2014** בלבד (requireAddMemberPassword).
+- `PUT /api/family-members/:id`, `DELETE`, `POST .../credentials`, `POST .../credentials/reset`, `POST .../verify-password` - דורשים סיסמת משתמש (requireMemberPassword).
+
+### Products (הרשאות ו-allocation)
+- הוספה/מחיקה (כולל bulk-delete): סיסמה **2014** (requireAddProductPassword).
+- עריכה, דוח חלוקה, היסטוריה, פיקדונות, refund: סיסמת אדמין (requireAdminPassword).
+- `GET /api/products/:id/allocation-report` - דוח חלוקה (חוק, כמות מקורית, בסיס, שארית, רשימת זכאים + מגיע/לקח/העביר/קיבל/זמין).
 
 ## כללי קוד
 
@@ -238,3 +260,9 @@ cd client && npm run dev
 # או הפעלה משולבת
 npm run dev
 ```
+
+## Docker
+
+- **Server Dockerfile**: base `node:18-bullseye-slim` (Debian 11) — Prisma דורש OpenSSL 1.1; Bookworm (Debian 12) משתמש ב-OpenSSL 3 ו-Prisma 5.x בוחר כברירת מחדל את debian-openssl-1.1.x.
+- **Prisma schema**: `binaryTargets = ["native", "debian-openssl-3.0.x"]` לשמירה על תאימות ל-Bookworm אם יוחלף ה-base.
+- **Compose**: מומלץ Docker Compose V2 (`docker compose`). healthcheck לשרת: TCP על פורט 3001, start_period 60s.

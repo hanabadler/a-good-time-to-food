@@ -33,7 +33,9 @@ function UserPanel() {
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
   const [scanError, setScanError] = useState('');
+  const [manualClientCode, setManualClientCode] = useState('');
   const videoRef = useRef(null);
+  const [cameraBlockedReason, setCameraBlockedReason] = useState(''); // '' | 'insecure' | 'error'
   const [showTransactionModal, setShowTransactionModal] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [showRequestModal, setShowRequestModal] = useState(false);
@@ -82,11 +84,23 @@ function UserPanel() {
     return raw;
   };
 
+  // Secure context required for camera on mobile (HTTPS or localhost)
+  const isCameraAllowed = typeof navigator !== 'undefined' &&
+    navigator.mediaDevices != null &&
+    typeof navigator.mediaDevices.getUserMedia === 'function';
+
   useEffect(() => {
     if (loginStep !== 'scan') return;
     setScanError('');
+    setCameraBlockedReason('');
 
     if (!loginMember?.clientCode) return;
+
+    if (!isCameraAllowed) {
+      setCameraBlockedReason('insecure');
+      setScanError('סריקת מצלמה זמינה רק בדף מאובטח (HTTPS או localhost). הזינו קוד ידנית למטה.');
+      return;
+    }
 
     let isActive = true;
     const reader = new BrowserQRCodeReader();
@@ -97,13 +111,13 @@ function UserPanel() {
         const videoEl = videoRef.current;
         if (!videoEl) return;
 
-        // Prefer a back camera + higher resolution to improve QR decoding
+        // Softer constraints for Samsung/mobile: avoid strict resolution that can fail
         const constraints = {
           audio: false,
           video: {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
+            width: { min: 320, ideal: 1280 },
+            height: { min: 240, ideal: 720 }
           }
         };
 
@@ -134,17 +148,39 @@ function UserPanel() {
         };
 
         try {
-          controls = await reader.decodeFromConstraints(constraints, videoEl, onResult);
+          // Try getUserMedia first for clearer error handling on mobile
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          try {
+            controls = await reader.decodeFromStream(stream, videoEl, onResult);
+          } catch (e2) {
+            stream.getTracks().forEach((t) => t.stop());
+            throw e2;
+          }
         } catch (e1) {
-          // Fallback: just pick any device
-          const devices = await BrowserCodeReader.listVideoInputDevices();
-          const deviceId = devices?.[0]?.deviceId || undefined;
-          controls = await reader.decodeFromVideoDevice(deviceId, videoEl, onResult);
+          if (!isActive) return;
+          // Fallback: ZXing's decodeFromConstraints (handles stream internally)
+          try {
+            controls = await reader.decodeFromConstraints(constraints, videoEl, onResult);
+          } catch (e2) {
+            try {
+              const devices = await BrowserCodeReader.listVideoInputDevices();
+              const deviceId = devices?.[0]?.deviceId || undefined;
+              controls = await reader.decodeFromVideoDevice(deviceId, videoEl, onResult);
+            } catch (e3) {
+              throw e1;
+            }
+          }
         }
       } catch (e) {
         console.error('Error starting QR scanner:', e);
         if (!isActive) return;
-        setScanError('אין גישה למצלמה או שלא נמצאה מצלמה. ודאו שאישרתם הרשאה.');
+        setCameraBlockedReason('error');
+        const msg = e?.name === 'NotAllowedError'
+          ? 'נדחתה גישת המצלמה. אשרו הרשאה למצלמה בהגדרות הדפדפן.'
+          : e?.message && (e.message.includes('secure') || e.message.includes('HTTPS'))
+            ? 'המצלמה זמינה רק בדף מאובטח (HTTPS). השתמשו בהזנת קוד ידנית למטה.'
+            : 'אין גישה למצלמה או שלא נמצאה מצלמה. השתמשו בהזנת קוד ידנית למטה.';
+        setScanError(msg);
       }
     };
 
@@ -163,7 +199,7 @@ function UserPanel() {
         // ignore
       }
     };
-  }, [loginStep, loginMember?.id, loginMember?.clientCode]);
+  }, [loginStep, loginMember?.id, loginMember?.clientCode, isCameraAllowed]);
 
   useEffect(() => {
     if (!selectedMember) return;
@@ -865,6 +901,41 @@ function UserPanel() {
                 <div style={{ marginTop: '0.75rem', color: '#666', fontSize: '0.9rem' }}>
                   טיפ לזיהוי: הגדילו את ה־QR על המסך, העלו בהירות למסך המציג, והרחיקו/קרבו עד שהמצלמה בפוקוס.
                 </div>
+
+                {/* Manual code entry fallback (HTTP / camera blocked) */}
+                <div style={{ marginTop: '1.5rem', padding: '1rem', borderRadius: '12px', border: '1px solid #e0e0e0', background: '#f5f5f5' }}>
+                  <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>הזנת קוד ידנית</div>
+                  <div style={{ color: '#666', fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                    אם המצלמה אינה זמינה (למשל בדף HTTP), הזינו את קוד הלקוח שמופיע ב־QR.
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      placeholder="הדביקו או הקלידו קוד"
+                      value={manualClientCode}
+                      onChange={(e) => setManualClientCode(e.target.value.trim())}
+                      style={{ flex: '1', minWidth: '180px', padding: '0.5rem 0.75rem', borderRadius: '8px', border: '1px solid #ccc' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={!manualClientCode}
+                      onClick={() => {
+                        if (manualClientCode.trim() !== String(loginMember?.clientCode || '')) {
+                          setScanError('קוד לא תואם למשתמש שנבחר.');
+                          return;
+                        }
+                        setScanError('');
+                        setManualClientCode('');
+                        setLoginStep('totp');
+                        setAuthError('');
+                        setTotpCode('');
+                      }}
+                    >
+                      אימות והמשך
+                    </button>
+                  </div>
+                </div>
               </>
             )}
 
@@ -877,6 +948,8 @@ function UserPanel() {
                   setAuthError('');
                   setTotpCode('');
                   setScanError('');
+                  setManualClientCode('');
+                  setCameraBlockedReason('');
                 }}
               >
                 חזור
