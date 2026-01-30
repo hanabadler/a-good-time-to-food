@@ -202,9 +202,9 @@ libssl.so.1.1: cannot open shared object file
 (...libquery_engine-debian-openssl-1.1.x.so.node)
 ```
 
-ב־**server/prisma/schema.prisma** הוגדר `binaryTargets = ["native", "debian-openssl-3.0.x"]` כדי ש־Prisma יבנה גם את ה-binary ל־Debian עם OpenSSL 3 (Bookworm).  
-ב־**server/Dockerfile** משתמשים ב-**node:18-bookworm-slim** (Debian 12 = OpenSSL 3).  
-אחרי שינוי ב-schema או ב-Dockerfile הרץ:
+ב־**server/Dockerfile** משתמשים ב-**node:18-bullseye-slim** (Debian 11), שיש בו **OpenSSL 1.1.x**. Prisma 5.x בוחר כברירת מחדל את ה-binary `debian-openssl-1.1.x`, ולכן על Bullseye זה עובד בלי שינויים.  
+(על Debian 12 / Bookworm יש OpenSSL 3, ולכן נדרש binaryTargets או image אחר.)  
+אחרי שינוי ב-Dockerfile הרץ:
 ```bash
 docker compose build server --no-cache
 docker compose up -d

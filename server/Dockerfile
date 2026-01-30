@@ -1,7 +1,7 @@
 # Backend Dockerfile
-# Use Debian-based image: Prisma's linux-musl binary on Alpine needs libssl.so.1.1,
-# which newer Alpine no longer provides. node:18-slim has glibc + OpenSSL 3.
-FROM node:18-bookworm-slim
+# Use Debian 11 (Bullseye): has OpenSSL 1.1.x. Prisma 5.x defaults to debian-openssl-1.1.x
+# and fails on Bookworm (OpenSSL 3) unless we force binaryTargets + env. Bullseye works out of the box.
+FROM node:18-bullseye-slim
 
 WORKDIR /app
 
