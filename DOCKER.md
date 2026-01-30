@@ -194,12 +194,27 @@ volumes:
   - ./server/prisma:/app/prisma
 ```
 
-### שגיאת Prisma
+### Prisma: `libssl.so.1.1: No such file or directory` (Alpine)
 
-אם יש שגיאות Prisma, הרץ:
+אם בלוגים של השרת מופיע:
+```text
+Error loading shared library libssl.so.1.1: No such file or directory
+(...libquery_engine-linux-musl.so.node)
+```
+
+זה קורה כי ב-**node:18-alpine** (Alpine חדש) יש רק OpenSSL 3, ו־Prisma משתמש ב-binary שדורש OpenSSL 1.1.  
+ב־**server/Dockerfile** משתמשים ב-**node:18-bookworm-slim** (Debian) כדי ש־Prisma יריץ את ה-binary התואם (glibc + OpenSSL 3). אחרי שינוי כזה הרץ:
 ```bash
-docker-compose exec server npx prisma generate
-docker-compose exec server npx prisma migrate deploy
+docker compose build server --no-cache
+docker compose up -d
+```
+
+### שגיאת Prisma (כללית)
+
+אם יש שגיאות Prisma אחרות, הרץ:
+```bash
+docker compose exec server npx prisma generate
+docker compose exec server npx prisma migrate deploy
 ```
 
 ### פורט תפוס

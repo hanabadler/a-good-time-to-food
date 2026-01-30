@@ -1,5 +1,7 @@
 # Backend Dockerfile
-FROM node:18-alpine
+# Use Debian-based image: Prisma's linux-musl binary on Alpine needs libssl.so.1.1,
+# which newer Alpine no longer provides. node:18-slim has glibc + OpenSSL 3.
+FROM node:18-bookworm-slim
 
 WORKDIR /app
 
