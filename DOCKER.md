@@ -167,6 +167,25 @@ docker rmi a-good-time-to-food_server:latest 2>/dev/null || true
 docker-compose up -d --build
 ```
 
+### השרת נשאר unhealthy / dependency failed to start
+
+אם מופיע:
+```text
+dependency failed to start: container tomer-app-server is unhealthy
+```
+
+1. **בדוק לוגים של השרת** – לראות אם הוא קורס או שאין DB:
+   ```bash
+   docker compose logs server
+   ```
+2. **ודא שהתיקייה `server/prisma` קיימת** על המארח (כולל `schema.prisma` ו־`migrations`). ה-volume ממפה אותה לתוך הקונטיינר.
+3. **הרץ מיגרציות ידנית** אם יש שגיאות Prisma:
+   ```bash
+   docker compose run --rm server npx prisma migrate deploy
+   docker compose up -d --build
+   ```
+4. ב־`docker-compose.yml` ה-healthcheck עודכן לבדיקת **TCP** (פורט 3001 פתוח) עם **start_period: 60s** – אם השרת עולה לאט, הוא אמור לעבור אחרי עד ~60 שניות.
+
 ### בסיס הנתונים לא נשמר
 
 ודא שה-volume מוגדר נכון ב-`docker-compose.yml`:
