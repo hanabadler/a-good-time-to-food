@@ -11,6 +11,14 @@
 
 ### 1. בניית והרצת הקונטיינרים
 
+מומלץ להשתמש ב-**Docker Compose V2** (פקודה: `docker compose` עם רווח):
+
+```bash
+docker compose up -d --build
+```
+
+אם מותקן רק ה־Compose הישן (Python):
+
 ```bash
 docker-compose up -d --build
 ```
@@ -26,7 +34,8 @@ docker-compose up -d --build
 ### 3. עצירת הקונטיינרים
 
 ```bash
-docker-compose down
+docker compose down
+# או: docker-compose down
 ```
 
 ### 4. עצירה עם מחיקת volumes (מחיקת בסיס הנתונים)
@@ -123,6 +132,40 @@ tomerApp/
 - `VITE_API_URL` - כתובת ה-API (ברירת מחדל: /api עבור production)
 
 ## פתרון בעיות
+
+### שגיאה: `KeyError: 'ContainerConfig'` (docker-compose ישן)
+
+אם מופיעה שגיאה כמו:
+```text
+ERROR: for server  'ContainerConfig'
+KeyError: 'ContainerConfig'
+```
+
+זו באג ב-**docker-compose 1.29.2** (גרסת Python) עם Docker Engine חדש. פתרונות:
+
+**א. מעבר ל-Docker Compose V2 (מומלץ)**
+
+התקן את ה-Compose החדש והרץ עם רווח (`compose` בלי מקף):
+
+```bash
+# Ubuntu: התקנת plugin
+sudo apt-get update
+sudo apt-get install docker-compose-v2
+
+# הרצה
+docker compose up -d --build
+```
+
+**ב. בלי לשדרג – ניקוי והרצה מחדש**
+
+מחק את הקונטיינר וה-image של השרת, ואז הרץ מחדש:
+
+```bash
+docker-compose down --remove-orphans
+docker rm -f tomer-app-server 2>/dev/null || true
+docker rmi a-good-time-to-food_server:latest 2>/dev/null || true
+docker-compose up -d --build
+```
 
 ### בסיס הנתונים לא נשמר
 
