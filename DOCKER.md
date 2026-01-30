@@ -194,16 +194,17 @@ volumes:
   - ./server/prisma:/app/prisma
 ```
 
-### Prisma: `libssl.so.1.1: No such file or directory` (Alpine)
+### Prisma: `libssl.so.1.1` / `libssl` not found
 
 אם בלוגים של השרת מופיע:
 ```text
-Error loading shared library libssl.so.1.1: No such file or directory
-(...libquery_engine-linux-musl.so.node)
+libssl.so.1.1: cannot open shared object file
+(...libquery_engine-debian-openssl-1.1.x.so.node)
 ```
 
-זה קורה כי ב-**node:18-alpine** (Alpine חדש) יש רק OpenSSL 3, ו־Prisma משתמש ב-binary שדורש OpenSSL 1.1.  
-ב־**server/Dockerfile** משתמשים ב-**node:18-bookworm-slim** (Debian) כדי ש־Prisma יריץ את ה-binary התואם (glibc + OpenSSL 3). אחרי שינוי כזה הרץ:
+ב־**server/prisma/schema.prisma** הוגדר `binaryTargets = ["native", "debian-openssl-3.0.x"]` כדי ש־Prisma יבנה גם את ה-binary ל־Debian עם OpenSSL 3 (Bookworm).  
+ב־**server/Dockerfile** משתמשים ב-**node:18-bookworm-slim** (Debian 12 = OpenSSL 3).  
+אחרי שינוי ב-schema או ב-Dockerfile הרץ:
 ```bash
 docker compose build server --no-cache
 docker compose up -d
